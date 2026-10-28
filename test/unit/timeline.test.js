@@ -1,8 +1,8 @@
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { pairEvents, buildRows, selectRows, rowHasActivityIn, shortId, displayTitle } from '../../src/timeline/model.js';
-import { windowFor, shiftWindow, changeView, ticks, xFor, intervalPixels, startOfView, formatInstant } from '../../src/timeline/scale.js';
-import { layoutRow, laneCenter, ROW_HEIGHT } from '../../src/timeline/layout.js';
+import { pairEvents, buildRows, selectRows, rowHasActivityIn, shortId, displayTitle, buildSessions } from '../../src/timeline/model.js';
+import { windowFor, shiftWindow, changeView, ticks, xFor, intervalPixels, startOfView, formatInstant, customWindow, formatWindow } from '../../src/timeline/scale.js';
+import { layoutRow, laneCenter, ROW_HEIGHT, MARKER_MIN_PX } from '../../src/timeline/layout.js';
 import { EventType } from '../../src/shared/constants.js';
 
 const ORIGINAL_TZ = process.env.TZ;
@@ -122,6 +122,20 @@ describe('time windows and ticks (America/New_York)', () => {
     }
   });
 
+  test('fitted windows (zoom to a session) get second/minute ticks and shift by their own span', () => {
+    const w = customWindow(T0 + 20e3, T0 + 5 * 60e3 + 20e3); // ~5 min
+    const tks = ticks(w, 'en-US');
+    assert.ok(tks.length >= 5 && tks.length <= 13, `${tks.length} ticks`);
+    assert.ok(tks.every((tk) => tk.t >= w.start && tk.t <= w.end));
+    assert.equal(tks[1].t - tks[0].t, 30e3, '30 s steps for a 5 min span');
+    assert.equal(new Date(tks[0].t).getSeconds() % 30, 0, 'aligned to the wall clock');
+    const short = ticks(customWindow(T0, T0 + 40e3), 'en-US');
+    assert.match(short[0].label, /\d{2}:\d{2}:\d{2}/, 'seconds shown for short spans');
+    const next = shiftWindow(w, 1);
+    assert.deepEqual([next.view, next.start, next.end], ['custom', w.end, w.end + (w.end - w.start)]);
+    assert.match(formatWindow(w, 'en-US'), /10:00:20 AM – 10:05:20 AM/);
+  });
+
   test('changing zoom keeps the focus instant visible', () => {
     const day = windowFor('day', T0);
     for (const view of ['hour', 'week', 'month']) {
@@ -172,6 +186,49 @@ describe('positions', () => {
     const ys = layoutRow(row, windowFor('hour', T0), 1000).filter((i) => i.kind === 'interval').map((i) => i.y);
     assert.notEqual(ys[0], ys[1]);
     assert.ok(laneCenter(1, 2) < ROW_HEIGHT && laneCenter(0, 2) > 0);
+  });
+});
+
+describe('sessions and readability when zoomed out', () => {
+  const MIN = 60e3;
+  // Three exchanges a few minutes apart, then one two hours later.
+  const events = [
+    user('m1', T0), resp('r1', 'm1', T0 + 30e3),
+    user('m2', T0 + 5 * MIN), resp('r2', 'm2', T0 + 5 * MIN + 45e3),
+    user('m3', T0 + 12 * MIN), // no response
+    user('m4', T0 + 120 * MIN), resp('r4', 'm4', T0 + 121 * MIN),
+  ];
+
+  test('messages less than 15 minutes apart form one session; long gaps start a new one', () => {
+    const sessions = buildSessions(pairEvents(events));
+    assert.deepEqual(sessions.map((s) => [s.start, s.end, s.messages, s.responses, s.completed]), [
+      [T0, T0 + 12 * MIN, 3, 2, 2],
+      [T0 + 120 * MIN, T0 + 121 * MIN, 1, 1, 1],
+    ]);
+    assert.equal(sessions[0].waitingMs, 30e3 + 45e3);
+  });
+
+  test('day view: sessions are visible bands and short exchanges are compact bars without dots', () => {
+    const [row] = buildRows([{ id: 'c1', title: 'A' }], events);
+    const items = layoutRow(row, windowFor('day', T0), 1000);
+    const band = items.find((i) => i.kind === 'session');
+    assert.ok(band, 'multi-message session drawn');
+    assert.ok(band.w >= 8, `band is visible (${band.w.toFixed(1)}px)`);
+    const bars = items.filter((i) => i.kind === 'interval');
+    assert.equal(bars.length, 3);
+    assert.ok(bars.every((b) => b.cls.includes('compact') && b.w >= 4 && b.h === 10));
+    const dots = items.filter((i) => i.kind === 'marker').map((i) => i.id);
+    assert.deepEqual(dots, ['user:m3'], 'only the message without a response keeps its dot');
+    assert.equal(items.filter((i) => i.kind === 'session').length, 1, 'single-exchange session has no band');
+  });
+
+  test('hour view: wide bars keep their send and finish dots', () => {
+    const [row] = buildRows([{ id: 'c1', title: 'A' }], events);
+    const items = layoutRow(row, windowFor('hour', T0), 1800); // 45 s = 22.5 px
+    const r2 = items.find((i) => i.id === 'resp:r2' && i.kind === 'interval');
+    assert.ok(r2.w >= MARKER_MIN_PX && !r2.cls.includes('compact'));
+    assert.ok(items.some((i) => i.kind === 'marker' && i.id === 'user:m2'));
+    assert.ok(items.some((i) => i.kind === 'marker' && i.id === 'resp:r2'));
   });
 });
 

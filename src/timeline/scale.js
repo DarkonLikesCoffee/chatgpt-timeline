@@ -48,7 +48,16 @@ export function windowFor(view, anchor) {
   return { view, start, end: addUnits(view, start, 1) };
 }
 
+// A window fitted to an arbitrary range (e.g. zoom to a session).
+export function customWindow(start, end) {
+  return { view: 'custom', start, end: Math.max(end, start + 1000) };
+}
+
 export function shiftWindow(win, dir) {
+  if (win.view === 'custom') {
+    const span = win.end - win.start;
+    return customWindow(win.start + dir * span, win.end + dir * span);
+  }
   const start = addUnits(win.view, win.start, dir);
   return { view: win.view, start, end: addUnits(win.view, start, 1) };
 }
@@ -79,8 +88,24 @@ function fmt(options, locale) {
 }
 
 // Ticks for the axis: { t, label, major }. Minor ticks only draw grid lines.
+const CUSTOM_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400].map((s) => s * 1000);
+
+function customTicks(start, end, locale) {
+  const span = end - start;
+  const step = CUSTOM_STEPS.find((st) => span / st <= 12) || 86400e3;
+  const fmt = new Intl.DateTimeFormat(locale, step < 60e3 ? { hour: '2-digit', minute: '2-digit', second: '2-digit' } : { hour: '2-digit', minute: '2-digit' });
+  // Align to local wall-clock multiples of the step.
+  const d = new Date(start);
+  const offset = -d.getTimezoneOffset() * 60e3;
+  let t = Math.ceil((start + offset) / step) * step - offset;
+  const out = [];
+  for (; t <= end; t += step) out.push({ t, major: true, label: fmt.format(t) });
+  return out;
+}
+
 export function ticks(win, locale) {
   const { view, start, end } = win;
+  if (view === 'custom') return customTicks(start, end, locale);
   const out = [];
   const time = fmt({ hour: '2-digit', minute: '2-digit' }, locale);
   if (view === 'hour') {
@@ -122,6 +147,11 @@ export function ticks(win, locale) {
 
 export function formatWindow(win, locale) {
   const { view, start, end } = win;
+  if (view === 'custom') {
+    const full = fmt({ weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }, locale);
+    const sameDay = new Date(start).toDateString() === new Date(end).toDateString();
+    return `${full.format(start)} – ${(sameDay ? fmt({ hour: '2-digit', minute: '2-digit', second: '2-digit' }, locale) : full).format(end)}`;
+  }
   if (view === 'hour') {
     return `${fmt({ weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }, locale).format(start)} – ${fmt({ hour: '2-digit', minute: '2-digit' }, locale).format(end)}`;
   }

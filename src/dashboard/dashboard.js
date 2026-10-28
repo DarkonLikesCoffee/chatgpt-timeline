@@ -5,7 +5,7 @@ import { loadHistory } from './loader.js';
 import { buildRows, selectRows, shortId } from '../timeline/model.js';
 import { layoutRow, ROW_HEIGHT } from '../timeline/layout.js';
 import {
-  VIEWS, windowFor, shiftWindow, changeView, ticks, formatWindow, formatInstant, formatDuration, xFor, tFor,
+  VIEWS, windowFor, shiftWindow, changeView, ticks, formatWindow, formatInstant, formatDuration, xFor, tFor, customWindow,
 } from '../timeline/scale.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -146,10 +146,11 @@ function renderRows() {
       ? `<a href="${esc(row.conversation.url)}" target="_blank" rel="noopener noreferrer" title="Open in ChatGPT: ${title}">${title}</a>`
       : `<span class="title" title="${title}">${title}</span>`;
     const parts = items.map((it) => {
-      const selected = sel && sel.rowId === row.id && sel.id === it.id && sel.kind === (it.kind === 'marker' ? 'event' : 'interval');
+      const kind = it.kind === 'marker' ? 'event' : it.kind;
+      const selected = sel && sel.rowId === row.id && sel.id === it.id && sel.kind === kind;
       const tip = esc(tooltip(row, it));
-      if (it.kind === 'interval') {
-        return `<div class="${it.cls}${selected ? ' sel' : ''}" data-kind="interval" data-id="${esc(it.id)}" style="left:${it.x.toFixed(1)}px;width:${it.w.toFixed(1)}px;top:${it.y.toFixed(1)}px" title="${tip}"></div>`;
+      if (it.kind === 'interval' || it.kind === 'session') {
+        return `<div class="${it.cls}${selected ? ' sel' : ''}" data-kind="${kind}" data-id="${esc(it.id)}" style="left:${it.x.toFixed(1)}px;width:${it.w.toFixed(1)}px;top:${it.y.toFixed(1)}px;height:${it.h}px" title="${tip}"></div>`;
       }
       return `<div class="${it.cls}${selected ? ' sel' : ''}" data-kind="event" data-id="${esc(it.id)}" role="button" tabindex="0" aria-label="${tip}" style="left:${it.x.toFixed(1)}px;top:${(it.y - 4.5).toFixed(1)}px" title="${tip}"></div>`;
     });
@@ -162,7 +163,15 @@ function renderRows() {
   $('#rows').innerHTML = html.join('');
 }
 
+function sessionText(sn) {
+  return `${sn.messages} message${sn.messages === 1 ? '' : 's'} · ${time(sn.start)} → ${time(sn.end)} (${formatDuration(sn.end - sn.start)})`;
+}
+
 function tooltip(row, it) {
+  if (it.kind === 'session') {
+    const sn = row.sessions.find((x) => x.id === it.id);
+    return sn ? `Session: ${sessionText(sn)}. Click for details, double-click to zoom in.` : '';
+  }
   if (it.kind === 'interval') {
     const iv = row.intervals.find((x) => x.id === it.id);
     if (!iv) return '';
@@ -217,6 +226,10 @@ function findSelection() {
     const iv = row.intervals.find((x) => x.id === s.id);
     return iv ? { row, iv } : null;
   }
+  if (s.kind === 'session') {
+    const session = row.sessions.find((x) => x.id === s.id);
+    return session ? { row, session } : null;
+  }
   const event = state.eventById.get(s.id);
   return event ? { row, event } : null;
 }
@@ -244,6 +257,22 @@ function renderDetails() {
     return;
   }
   const { row } = found;
+  if (found.session) {
+    const sn = found.session;
+    el.innerHTML = `${convHeader(row)}
+      <p><span class="badge completed">Session</span></p>
+      ${dl([
+        ['From', exact(sn.start)],
+        ['To', exact(sn.end)],
+        ['Length', esc(formatDuration(sn.end - sn.start))],
+        ['Messages sent', String(sn.messages)],
+        ['Responses', `${sn.responses} (${sn.completed} completed)`],
+        ['Waiting for responses', esc(formatDuration(sn.waitingMs)) || '—'],
+      ])}
+      <p class="note">A session groups messages that were less than 15 minutes apart. Its band covers the whole span; the darker bars inside are the actual message → response intervals.</p>
+      <div class="actions"><button data-action="zoomSession">Zoom in to this session</button></div>`;
+    return;
+  }
   if (found.iv) {
     const iv = found.iv;
     const r = iv.response;
@@ -376,6 +405,20 @@ function zoomFocus() {
   return now >= state.win.start && now < state.win.end ? now : (state.win.start + state.win.end) / 2;
 }
 
+// Fit [a, b] in view: a fitted window for short ranges, otherwise the
+// smallest calendar view that contains it.
+function zoomTo(a, b) {
+  if (b - a < 50 * 60e3) {
+    const pad = Math.max(30e3, (b - a) * 0.08);
+    return setWindow(customWindow(a - pad, b + pad));
+  }
+  for (const view of VIEWS) {
+    const w = windowFor(view, (a + b) / 2);
+    if (w.start <= a && w.end >= b) return setWindow(w);
+  }
+  setWindow(windowFor('month', (a + b) / 2));
+}
+
 function focusTime(t) {
   setWindow(windowFor(state.win.view, t));
 }
@@ -435,17 +478,28 @@ function bind() {
     const rowEl = e.target.closest('.row');
     if (!rowEl) return;
     const rowId = rowEl.dataset.row;
-    const item = e.target.closest('[data-kind="event"], [data-kind="interval"]');
+    const item = e.target.closest('[data-kind="event"], [data-kind="interval"], [data-kind="session"]');
     if (item) select({ kind: item.dataset.kind, rowId, id: item.dataset.id });
     else select({ kind: 'row', rowId, id: rowId });
   });
   // Double-click on a track zooms into the next finer view at that time.
   $('#rows').addEventListener('dblclick', (e) => {
+    const sessionEl = e.target.closest('[data-kind="session"]');
+    if (sessionEl) {
+      const sn = state.rowById.get(sessionEl.closest('.row').dataset.row)?.sessions.find((x) => x.id === sessionEl.dataset.id);
+      if (sn) return zoomTo(sn.start, sn.end);
+    }
     const track = e.target.closest('.track');
-    const finer = VIEWS[VIEWS.indexOf(state.win.view) - 1];
-    if (!track || !finer) return;
+    if (!track) return;
     const rect = track.getBoundingClientRect();
-    setWindow(changeView(state.win, finer, tFor(e.clientX - rect.left, state.win.start, state.win.end, rect.width)));
+    const t = tFor(e.clientX - rect.left, state.win.start, state.win.end, rect.width);
+    const finer = VIEWS[VIEWS.indexOf(state.win.view) - 1];
+    if (finer) setWindow(changeView(state.win, finer, t));
+    else {
+      // Hour or fitted view: zoom to a third of the current span around t.
+      const span = Math.max(60e3, (state.win.end - state.win.start) / 3);
+      setWindow(customWindow(t - span / 2, t + span / 2));
+    }
   });
   $('#rows').addEventListener('keydown', (e) => {
     if ((e.key === 'Enter' || e.key === ' ') && e.target.dataset.kind === 'event') {
@@ -477,6 +531,7 @@ function bind() {
     if (!action || !found) return;
     if (action === 'deleteConv') await deleteConversation(found.row.id);
     else if (action === 'focusLatest' && found.row.lastActivityAt) focusTime(found.row.lastActivityAt);
+    else if (action === 'zoomSession' && found.session) zoomTo(found.session.start, found.session.end);
     else if (action === 'raw') {
       const pre = $('#details pre.raw');
       pre.textContent = JSON.stringify({ conversation: found.row.conversation, events: found.row.events }, null, 2);

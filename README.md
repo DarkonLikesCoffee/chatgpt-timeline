@@ -39,7 +39,8 @@ To update after pulling new code, click the reload icon on the extension's card 
 | **Period + Load from ChatGPT** | Reads conversations updated in that period, with all of their messages. |
 | **Hour / Day / Week / Month** (or keys `1`–`4`) | Zoom level. Windows align to your local calendar (Monday-start weeks). |
 | **‹ Now ›** (or `←` / `→`) | Move back or forward by one window, or jump to now. |
-| Double-click a track | Zoom into the next finer level at that time. |
+| Double-click a track | Zoom into the next finer level at that time (from the Hour view: a fitted window a third as wide). |
+| Session band (click / double-click) | Session summary (span, messages, time spent waiting for responses) / zoom to fit the session exactly, with second-level ticks. |
 | **Search titles** | Filters rows by title (also matches the conversation id). |
 | **Sort** | *Recent activity*, *Chronological* (earliest first activity first), or *Title*. |
 | **Active in view** | Hides conversations with no activity in the visible window. |
@@ -49,6 +50,10 @@ To update after pulling new code, click the reload icon on the extension's card 
 | Click a marker | Event type, exact local time with milliseconds and time zone, ISO/UTC instant, where the time comes from. |
 | Click a bar | Send time, completion (or stop/failure) time, duration, attempt number. |
 | **Data** | Statistics, summary of the last load, **Export JSON**, **Delete all…**, per-conversation *Inspect* / *Delete*. |
+
+**Reading it when zoomed out.** Most responses take seconds to a couple of minutes, which is less than a pixel in a Day, Week or Month view. So that the timeline stays readable:
+- **Sessions:** messages less than 15 minutes apart form a session, drawn as a light green band from the first message to the last response. Idle time between sessions stays empty.
+- **Compact bars:** when a message → response bar would be narrower than its two markers (under 14 px), the markers are hidden and a thicker bar (at least 4 px) represents the exchange. Clicking it still shows both exact times. Zoom in (Hour view, a fitted session, or double-click) to see the individual ● and ◆ markers.
 
 Bars: green = message → completed response; purple = regenerated attempt (starts when that attempt started); grey hatched = stopped or failed (not a completion). Overlapping intervals in one conversation get separate lanes. The red line is "now". Gaps between bars only mean there are no messages; they say nothing about whether you were active. The dashboard virtualizes rows and handles thousands of conversations.
 

@@ -89,6 +89,45 @@ export function assignLanes(intervals) {
   return laneEnds.length;
 }
 
+// Messages less than this far apart (end of one exchange to the start of
+// the next) belong to one session.
+export const SESSION_GAP_MS = 15 * 60 * 1000;
+
+// Group a conversation's activity into sessions: runs of exchanges with gaps
+// shorter than SESSION_GAP_MS. Time-based, so independent of the zoom level.
+export function buildSessions({ intervals, pending, unpaired }, gapMs = SESSION_GAP_MS) {
+  const items = [
+    ...intervals.map((iv) => ({ start: iv.start, end: iv.end, iv })),
+    ...pending.map((e) => ({ start: e.timestamp, end: e.timestamp, message: e })),
+    ...unpaired.map((e) => ({ start: e.timestamp, end: e.timestamp })),
+  ].sort((a, b) => a.start - b.start || a.end - b.end);
+  const sessions = [];
+  let cur = null;
+  for (const it of items) {
+    if (cur && it.start - cur.end <= gapMs) {
+      cur.end = Math.max(cur.end, it.end);
+      cur.items.push(it);
+    } else {
+      cur = { start: it.start, end: it.end, items: [it] };
+      sessions.push(cur);
+    }
+  }
+  return sessions.map(({ start, end, items: its }) => {
+    const ivs = its.filter((i) => i.iv).map((i) => i.iv);
+    const completed = ivs.filter((iv) => iv.status === 'completed');
+    return {
+      id: `session:${start}`,
+      start,
+      end,
+      items: its.length,
+      messages: new Set(ivs.map((iv) => iv.request.id)).size + its.filter((i) => i.message).length,
+      responses: ivs.length,
+      completed: completed.length,
+      waitingMs: completed.reduce((sum, iv) => sum + (iv.end - iv.start), 0),
+    };
+  });
+}
+
 // Build one row per conversation. Conversations without events still get a
 // row (they can exist after a partial delete or import).
 export function buildRows(conversations, events) {
@@ -117,6 +156,7 @@ export function buildRows(conversations, events) {
       title: displayTitle(conversation),
       events: paired.markers.map((m) => m.event),
       ...paired,
+      sessions: buildSessions(paired),
       lanes: paired.intervals.reduce((n, iv) => Math.max(n, iv.lane + 1), 1),
       firstActivityAt: evs.length ? first : conversation.firstObservedAt,
       lastActivityAt: evs.length ? last : conversation.lastActivityAt,
