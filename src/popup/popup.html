@@ -11,6 +11,12 @@
   <dl id="stats"></dl>
   <button id="open" class="primary">Open timeline</button>
   <button id="pause"></button>
+  <section class="diag">
+    <h2>This tab</h2>
+    <ul id="tabStatus"><li class="muted">Checking…</li></ul>
+    <button id="copyDiag" hidden>Copy diagnostics</button>
+    <p id="copied" class="muted" hidden>Copied. The diagnostics contain page structure and counters only, no message text.</p>
+  </section>
   <p class="muted">Records only when you send a message and when a response finishes on chatgpt.com. No message text. Stored locally.</p>
   <script type="module" src="popup.js"></script>
 </body>

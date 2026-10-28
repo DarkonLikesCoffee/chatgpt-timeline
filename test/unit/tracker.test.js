@@ -67,6 +67,55 @@ describe('user messages', () => {
     assert.equal(e.timestampSource, 'dom-observed');
   });
 
+  test('falls back to a visibly streaming response when neither intent nor stop control is recognised', () => {
+    const ctx = setup();
+    ctx.snap(1000, [U('a'), A('b', { length: 30 })]);
+    ctx.snap(6000, [U('a'), A('b', { length: 30 }), U('m1')]);
+    ctx.snap(7000, [U('a'), A('b', { length: 30 }), U('m1'), A('r1', { length: 4 })]);
+    assert.equal(ctx.events().length, 0, 'not yet: the response has not grown');
+    ctx.snap(7500, [U('a'), A('b', { length: 30 }), U('m1'), A('r1', { length: 40 })]);
+    ctx.snap(9000, [U('a'), A('b', { length: 30 }), U('m1'), A('r1', { length: 90 })]);
+    ctx.snap(12500, [U('a'), A('b', { length: 30 }), U('m1'), A('r1', { length: 90 })]);
+    const evs = ctx.events();
+    assert.deepEqual(evs.map((e) => [e.type, e.messageId, e.timestamp, e.timestampSource]), [
+      [EventType.USER_MESSAGE, 'm1', 6000, 'dom-observed'],
+      [EventType.ASSISTANT_RESPONSE_COMPLETED, 'r1', 9000, 'dom-transition'],
+    ]);
+  });
+
+  test('a lazily rendered history message whose response does not grow is not recorded', () => {
+    const ctx = setup();
+    ctx.snap(1000, []);
+    ctx.snap(6000, [U('a')]);
+    ctx.snap(6100, [U('a'), A('b', { length: 300 })]);
+    ctx.snap(9000, [U('a'), A('b', { length: 300 })]);
+    assert.deepEqual(ctx.events(), []);
+  });
+
+  test('a just-sent message re-rendered under a new id is not recorded twice', () => {
+    const ctx = setup();
+    ctx.snap(0, [U('a'), A('b')]);
+    ctx.tracker.noteSubmitIntent(5000);
+    ctx.snap(5020, [U('a'), A('b'), U('client-id')], { generating: true });
+    ctx.snap(5400, [U('a'), A('b'), U('server-id')], { generating: true });
+    ctx.snap(5800, [U('a'), A('b'), U('server-id'), A('r1')], { generating: true });
+    ctx.snap(7000, [U('a'), A('b'), U('server-id'), A('r1')]);
+    ctx.snap(8000, [U('a'), A('b'), U('server-id'), A('r1')]);
+    const evs = ctx.events();
+    assert.deepEqual(evs.map((e) => [e.type, e.messageId, e.requestMessageId ?? null]), [
+      [EventType.USER_MESSAGE, 'client-id', null],
+      [EventType.ASSISTANT_RESPONSE_COMPLETED, 'r1', 'client-id'],
+    ]);
+  });
+
+  test('sending in a long, virtualized conversation (other turns re-render too) is recorded', () => {
+    const ctx = setup();
+    ctx.snap(0, [U('x9'), A('y9')]);
+    ctx.tracker.noteSubmitIntent(5000);
+    ctx.snap(5030, [U('x7'), A('y7'), U('x8'), A('y8'), U('x9'), A('y9'), U('m1')], { generating: true });
+    assert.deepEqual(ctx.events().map((e) => [e.messageId, e.timestamp]), [['m1', 5000]]);
+  });
+
   test('generation already running when the page loads is not a new message', () => {
     const ctx = setup();
     ctx.snap(1000, [U('a'), A('b')], { generating: true });

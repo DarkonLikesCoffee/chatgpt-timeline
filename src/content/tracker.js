@@ -17,8 +17,10 @@
 // Rules (see README "Event semantics"):
 // - A user message is recorded only if it appears live in this tab: a send
 //   intent (send click / Enter) shortly before it rendered, or, failing that,
-//   generation visibly starting right after it rendered. Messages rendered
-//   from history are never recorded.
+//   generation visibly starting right after it rendered (stop control
+//   appearing, or the response after it streaming). Messages rendered from
+//   history are never recorded. A just-sent message re-rendered under a new
+//   id is the same message.
 // - A response is associated with the user turn that immediately precedes it
 //   in the rendered thread (never "the latest user message").
 // - A response is complete when it is no longer streaming, ChatGPT's
@@ -38,6 +40,8 @@ import {
 export const DEFAULTS = Object.freeze({
   INTENT_WINDOW_MS: 20000, // send intent -> rendered user message
   FALLBACK_WINDOW_MS: 3000, // rendered user message -> generation start
+  GROWTH_WINDOW_MS: 15000, // rendered user message -> its response visibly streaming
+  ALIAS_WINDOW_MS: 10000, // a just-sent message re-rendered under a new id
   SETTLE_MS: 3000, // ignore generation-start fallback right after navigation
   CONFIRM_MS: 800, // completion must hold this long
   QUIET_MS: 3000, // completion hold time while the stop control has never been seen on this page
@@ -125,6 +129,7 @@ export class ConversationTracker {
     this.prevGenerating = null;
     this.lastGenStartAt = -Infinity;
     this.unconfirmedUser = null;
+    this.aliases = new Map(); // re-rendered message id -> recorded message id
     this.submitIntents = this.submitIntents.filter((t) => s.at - t <= this.opt.INTENT_WINDOW_MS && t >= s.at - 2000);
     this.stopIntents = [];
     this.meta = { title: s.title || '', url: s.url || '' };
@@ -190,32 +195,45 @@ export class ConversationTracker {
     const fresh = userTurns.filter((t) => !this.users.has(t.id));
     for (const t of fresh) this.users.set(t.id, { firstSeenAt: at });
 
-    // Several user messages rendering at once is history (load, branch switch).
     // Only the last rendered user turn can be a live submission.
     const last = userTurns[userTurns.length - 1];
-    if (fresh.length === 1 && fresh[0] === last) {
+    if (last && fresh.includes(last)) {
+      const replaced = this.prevUserOrder[userTurns.length - 1];
       const intent = this.takeSubmitIntent(at);
       if (intent != null) {
         this.recordUser(last, userTurns, intent, TimestampSource.SUBMIT_INTENT);
-      } else if (at - this.resetAt >= this.opt.SETTLE_MS) {
-        // Turns rendered right after navigation are history, never candidates.
+      } else if (
+        replaced && replaced !== last.id && this.liveUserIds.has(replaced) &&
+        !userTurns.some((t) => t.id === replaced) && at - this.users.get(replaced).firstSeenAt <= this.opt.ALIAS_WINDOW_MS
+      ) {
+        // The message just sent was re-rendered under a new id (e.g. a
+        // client-side id replaced by the server's): same message, no new event.
+        this.aliases.set(last.id, this.resolve(replaced));
+      } else if (fresh.length === 1 && at - this.resetAt >= this.opt.SETTLE_MS) {
+        // Several user turns rendering at once is history (load, branch
+        // switch), and so are turns rendered right after navigation.
         this.unconfirmedUser = { id: last.id, seenAt: at };
+      } else {
+        this.unconfirmedUser = null;
       }
-    } else if (fresh.length) {
-      this.unconfirmedUser = null;
     }
 
-    // Fallback: no intent was captured (e.g. a control we do not recognise),
-    // but generation started right after the message rendered.
+    // Fallback 1: no intent was captured (e.g. a control we do not
+    // recognise), but generation started right after the message rendered.
+    // (Fallback 2, a response visibly streaming, is in processAssistants.)
     const u = this.unconfirmedUser;
     if (u && !this.liveUserIds.has(u.id)) {
       if (last && last.id === u.id && this.lastGenStartAt >= u.seenAt - 1000 && this.lastGenStartAt - u.seenAt < this.opt.FALLBACK_WINDOW_MS) {
         this.recordUser(last, userTurns, u.seenAt, TimestampSource.DOM_OBSERVED);
         this.unconfirmedUser = null;
-      } else if (at - u.seenAt > this.opt.FALLBACK_WINDOW_MS || !last || last.id !== u.id) {
+      } else if (at - u.seenAt > this.opt.GROWTH_WINDOW_MS || !last || last.id !== u.id) {
         this.unconfirmedUser = null;
       }
     }
+  }
+
+  resolve(id) {
+    return this.aliases.get(id) ?? id;
   }
 
   recordUser(turn, userTurns, timestamp, source) {
@@ -245,7 +263,7 @@ export class ConversationTracker {
       let r = this.responses.get(turn.id);
       if (!r) {
         const prev = turns[i - 1];
-        const requestMessageId = prev && prev.role === 'user' ? prev.id : null;
+        const requestMessageId = prev && prev.role === 'user' ? this.resolve(prev.id) : null;
         const siblings = requestMessageId ? this.responsesByRequest.get(requestMessageId) || new Set() : new Set();
         const previousResponseId = [...siblings].pop() || null;
         r = {
@@ -271,6 +289,16 @@ export class ConversationTracker {
       // not enough: right after a send it can appear one frame before the new
       // user turn, while an old response is still the last turn.
       if (!r.live && !r.final && (turn.streaming || (inProgress && grew))) r.live = true;
+      // Fallback 2: the unconfirmed user message right before this response
+      // was sent live if the response is visibly generating (text growing),
+      // even when neither a send action nor the stop control was recognised.
+      const u = this.unconfirmedUser;
+      const prev = turns[i - 1];
+      if (u && !r.final && prev && prev.role === 'user' && prev.id === u.id && (r.live || grew)) {
+        this.recordUser(prev, turns.filter((t) => t.role === 'user'), u.seenAt, TimestampSource.DOM_OBSERVED);
+        this.unconfirmedUser = null;
+        r.live = true;
+      }
       if (!r.live || r.final) return;
 
       if (turn.error) {
@@ -311,8 +339,10 @@ export class ConversationTracker {
   // An error shown after the last user turn with no response turn at all.
   processTrailingError(s, turns, at) {
     if (!s.trailingError) return;
-    const last = turns[turns.length - 1];
-    if (!last || last.role !== 'user' || !this.liveUserIds.has(last.id) || this.failedRequests.has(last.id)) return;
+    const lastTurn = turns[turns.length - 1];
+    if (!lastTurn || lastTurn.role !== 'user') return;
+    const last = { id: this.resolve(lastTurn.id) };
+    if (!this.liveUserIds.has(last.id) || this.failedRequests.has(last.id)) return;
     this.failedRequests.add(last.id);
     this.emitEvent({
       id: `fail:${last.id}`,

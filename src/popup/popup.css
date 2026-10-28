@@ -11,3 +11,10 @@ dd { margin: 0; }
 button { display: block; width: 100%; margin: 0 0 6px; padding: 6px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: inherit; font: inherit; cursor: pointer; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .muted { color: var(--muted); font-size: 11px; margin: 6px 0 0; }
+.diag { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 8px; }
+.diag h2 { font-size: 12px; margin: 0 0 4px; }
+.diag ul { margin: 0 0 8px; padding-left: 16px; }
+.diag li { margin: 2px 0; }
+.diag li.bad { color: #d6455d; }
+.diag li.ok { color: inherit; }
+[hidden] { display: none !important; }

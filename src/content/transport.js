@@ -11,6 +11,7 @@ export class Transport {
     this.queue = [];
     this.sending = false;
     this.dead = false;
+    this.stats = { delivered: 0, failedAttempts: 0, dropped: 0, lastError: null };
   }
 
   send(message) {
@@ -32,8 +33,12 @@ export class Transport {
         try {
           await this.sendImpl(item.message);
           this.queue.shift();
+          this.stats.delivered++;
         } catch (err) {
+          this.stats.failedAttempts++;
+          this.stats.lastError = String(err?.message || err);
           if (/context invalidated/i.test(String(err?.message || err))) {
+            console.warn('[ChatGPT Timeline] extension was reloaded or removed; reload this tab to resume tracking');
             this.dead = true;
             this.queue = [];
             this.onDead(err);
@@ -43,6 +48,7 @@ export class Transport {
           if (delay == null) {
             console.warn('[ChatGPT Timeline] dropping message after retries', err);
             this.queue.shift();
+            this.stats.dropped++;
           } else {
             await new Promise((r) => setTimeout(r, delay));
           }

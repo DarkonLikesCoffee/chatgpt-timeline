@@ -116,6 +116,35 @@ describe('extension in Chromium', { skip: !chromium && 'playwright not available
     await page.close();
   });
 
+  test('the content script answers diagnostics requests (used by the popup)', async () => {
+    const page = await openChat(ctx, `/c/${CONV_A}`);
+    const dash = await openDashboard(ctx, extId);
+    const diags = await dash.evaluate(async () => {
+      const tabs = await chrome.tabs.query({});
+      const out = [];
+      for (const t of tabs) {
+        const d = await chrome.tabs.sendMessage(t.id, { type: 'diagnostics:get' }).catch(() => null);
+        if (d) out.push(d);
+      }
+      return out;
+    });
+    assert.equal(diags.length >= 1, true);
+    const d = diags.find((x) => x.page.path === '/c/<id>');
+    assert.ok(d.ok);
+    assert.equal(d.page.conversationIdFound, true);
+    assert.ok(d.snapshots >= 1);
+    assert.equal(d.transport.dead, false);
+    assert.ok(Array.isArray(d.page.composerButtons) && d.page.composerButtons.length >= 1);
+    // The popup's plain-language summary of these diagnostics.
+    const popup = await ctx.newPage();
+    await popup.goto(`chrome-extension://${extId}/src/popup/popup.html`);
+    const summary = await popup.evaluate(async (diag) => (await import('./popup.js')).summarize(diag), d);
+    assert.deepEqual(summary[0], ['Tracker running on this tab', 'ok']);
+    assert.deepEqual(summary[1][1], 'bad', 'empty page: no messages found');
+    assert.equal(await popup.locator('#copyDiag').isVisible(), false, 'hidden when the active tab has no tracker');
+    await Promise.all([page.close(), dash.close(), popup.close()]);
+  });
+
   test('concurrent conversations in two tabs, stop and failure outcomes', async () => {
     const a = await openChat(ctx, `/c/${CONV_A}`);
     const b = await openChat(ctx, `/c/${CONV_B}`);

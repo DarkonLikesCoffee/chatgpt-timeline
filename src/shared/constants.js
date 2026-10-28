@@ -49,6 +49,7 @@ export const Msg = Object.freeze({
   GET_STATUS: 'status:get',
   SET_PAUSED: 'status:set-paused',
   OPEN_DASHBOARD: 'dashboard:open',
+  GET_DIAGNOSTICS: 'diagnostics:get', // popup -> content script of a tab
   DB_CHANGED: 'db:changed',
 });
 

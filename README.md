@@ -62,7 +62,7 @@ The dashboard virtualizes rows (only visible rows are in the DOM). A test confir
 
 | Event | When | Timestamp |
 |---|---|---|
-| `USER_MESSAGE` | You submit a message (send button, Enter, or the *Send* button of an inline edit) **and** the message appears in the conversation. | The time of the send action (`timestampSource: "submit-intent"`). If no send action was captured but the message appeared and generation visibly started within 3 s, the time it appeared (`"dom-observed"`). |
+| `USER_MESSAGE` | You submit a message (send button, Enter, or the *Send* button of an inline edit) **and** the message appears in the conversation. | The time of the send action (`timestampSource: "submit-intent"`). If no send action was captured, the time it appeared (`"dom-observed"`), but only when generation visibly followed: the stop control appeared within 3 s, or the response right after it streamed within 15 s. |
 | `ASSISTANT_RESPONSE_COMPLETED` | The response stopped streaming, ChatGPT's stop control disappeared, and the response text stopped changing. | The moment that state was first observed (`"dom-transition"`). It is held for 0.8 s (3 s if the stop control has never been seen on the page) to rule out pauses; the timestamp is not the confirmation time. |
 | `ASSISTANT_RESPONSE_INTERRUPTED` | Same as completed, but you clicked ChatGPT's stop button during that generation. | When generation ended. |
 | `ASSISTANT_RESPONSE_FAILED` | An error notice appeared in the response, or after your message with no response. | When generation ended, or when the error appeared. |
@@ -85,7 +85,7 @@ ChatGPT has no public API for this, and the extension deliberately does **not** 
 | Edits | Editing creates a new user message id at the same position (a new branch). It is recorded as a new `USER_MESSAGE` with `revisionOf` set to the replaced message id. |
 | Regeneration | A new assistant message id after the same user message, observed generating. It is recorded as another outcome with `responseKind: "regenerated"`, `previousResponseId`, and its own `startedAt`. Switching between existing alternatives with `‹ 1/2 ›` is not generation, so it records nothing. |
 | Stop / errors | A click on the stop control during a generation turns its outcome into `INTERRUPTED`. Error notices (`.text-token-text-error`, …) produce `FAILED`. |
-| History vs live | Several messages appearing at once, or any message without a send action, is treated as history and never recorded. This also covers branch switches and lazy rendering. Turns that render within 3 s after navigation are never considered live, so a page load is not mistaken for a send. |
+| History vs live | A message counts as live only if it is the newest user turn and either a send action preceded it or generation visibly followed it. Several messages appearing at once without a send action are history (page load, branch switch, lazy rendering). Turns that render within 3 s after navigation are never considered live, so a page load is not mistaken for a send. If a just-sent message is re-rendered under a new id, it is treated as the same message. |
 | SPA navigation | URL changes are detected via mutations, `popstate` and a 1 s poll. On navigation, completions that were observed but not yet confirmed are saved for the old conversation; tracking state then resets. |
 | Same conversation in several tabs | Event ids are deterministic (`user:<messageId>`, `resp:<responseMessageId>`, `fail:<messageId>`). The service worker keeps one record per id, preferring the better timestamp source, then the earliest time. |
 | Association | A response is linked to the user turn **immediately preceding it in the rendered thread** (`association: "dom-adjacent"`), never "the latest user message". Pairing in the timeline uses message ids, so out-of-order completions across tabs or conversations pair correctly. If no user turn precedes the response, it is stored with `association: "none"` and shown faded, without an interval. |
@@ -198,7 +198,25 @@ Because live testing was not possible here, please run this checklist once after
 6. Edit a previous message and resubmit: you should get a new ●. Its details should show "Edited version of".
 7. Reload a long conversation, and switch branches with ‹ 1/2 ›: nothing new should be recorded.
 
-If something is not recorded, open DevTools on the ChatGPT tab and check the console for `[ChatGPT Timeline]` warnings. Then compare the selectors in `SELECTORS` in `src/content/chatgpt-adapter.js` with the current page (for example `document.querySelectorAll('[data-message-author-role]')`, or `document.querySelector('[data-testid="stop-button"]')` while generating), and update that file. The tracker does not need changes.
+If any step fails, see [Troubleshooting](#troubleshooting).
+
+## Troubleshooting
+
+**1. Is the tracker running on the tab?** When the extension starts on a ChatGPT tab, the page's DevTools console shows one line:
+`[ChatGPT Timeline] v0.1.1 tracking this tab. …`. Other console messages on chatgpt.com, such as `Feature is disabled`, Statsig warnings, or CSP errors from `runner.html`, come from ChatGPT itself or from other extensions and are unrelated. If the line is missing:
+- reload the ChatGPT tab (required after installing, updating or reloading the extension);
+- check that the extension is enabled in `chrome://extensions` and shows no errors there.
+
+**2. Open the popup on the ChatGPT tab.** Under **This tab** it lists:
+- whether the tracker is running;
+- how many of your messages and responses it can see on the page;
+- how many send actions it detected;
+- whether it has recognized ChatGPT's stop button;
+- what it has recorded so far.
+
+**3. Copy diagnostics.** If messages are not detected, send a message, wait for the response, then click **Copy diagnostics** in the popup and include the result in a bug report. It contains only page structure (element counts, tag and attribute names, the composer's button labels) and counters. It contains no message text, titles or links. With it, the selectors in `src/content/chatgpt-adapter.js` can be fixed.
+
+**4. Verbose log.** In the ChatGPT tab's console, enable the *Verbose* level to see one `[ChatGPT Timeline]` debug line per recorded event.
 
 ## Known limitations
 

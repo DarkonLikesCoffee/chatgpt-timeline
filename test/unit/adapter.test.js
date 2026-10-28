@@ -2,7 +2,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { JSDOM } from 'jsdom';
-import { readSnapshot, conversationIdFromPath, classifyIntent, readTitle } from '../../src/content/chatgpt-adapter.js';
+import { readSnapshot, conversationIdFromPath, classifyIntent, readTitle, diagnose } from '../../src/content/chatgpt-adapter.js';
 
 const fixture = readFileSync(new URL('../fixtures/chatgpt-conversation.html', import.meta.url), 'utf8');
 const CID = '68f1a2b3-0000-8000-9999-000000000001';
@@ -82,6 +82,49 @@ describe('snapshot', () => {
     assert.equal(readTitle(w.document, CID), 'Another title');
     w.document.title = 'ChatGPT';
     assert.equal(readTitle(w.document, CID), '');
+  });
+});
+
+describe('markup variants', () => {
+  const page = (body) => new JSDOM(`<!doctype html><body><main>${body}</main></body>`, { url: `https://chatgpt.com/c/${CID}` }).window;
+
+  test('turns marked only with data-turn / data-turn-id', () => {
+    const w = page(`
+      <section data-turn="user" data-turn-id="t-u1"><div>hi</div></section>
+      <section data-turn="assistant" data-turn-id="t-a1"><div class="markdown">answer</div></section>`);
+    const s = readSnapshot(w.document, w.location, 1);
+    assert.deepEqual(s.turns.map((t) => [t.role, t.id]), [['user', 't-u1'], ['assistant', 't-a1']]);
+    assert.equal(s.turns[1].length, 'answer'.length);
+  });
+
+  test('message id on a descendant of the role element', () => {
+    const w = page(`
+      <div data-testid="conversation-turn-1"><div data-message-author-role="user"><div data-message-id="u1">hi</div></div></div>
+      <div data-testid="conversation-turn-2"><div data-message-author-role="assistant"><div data-message-id="a1">yo</div></div></div>`);
+    const s = readSnapshot(w.document, w.location, 1);
+    assert.deepEqual(s.turns.map((t) => [t.role, t.id]), [['user', 'u1'], ['assistant', 'a1']]);
+  });
+
+  test('stop control recognised by aria-label', () => {
+    const w = page('<form><button aria-label="Stop answering"></button></form>');
+    assert.equal(readSnapshot(w.document, w.location, 1).generating, true);
+  });
+});
+
+describe('diagnostics', () => {
+  test('describes structure without any message text, titles or links', () => {
+    const w = load();
+    const d = diagnose(w.document, w.location);
+    assert.equal(d.counts['[data-message-author-role]'], 6);
+    assert.equal(d.snapshot.users, 2);
+    assert.equal(d.snapshot.assistants, 2);
+    assert.equal(d.snapshot.generating, true);
+    assert.ok(d.composerButtons.some((b) => b.testid === 'stop-button'));
+    assert.equal(d.path, '/c/<id>');
+    const json = JSON.stringify(d);
+    for (const text of ['Hello there', 'How can I help', 'Partial answer', 'draft text', 'Refactoring the parser', 'Other chat', CID]) {
+      assert.ok(!json.includes(text), text);
+    }
   });
 });
 
