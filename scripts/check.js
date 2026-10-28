@@ -1,10 +1,10 @@
 // Static checks for the unpacked extension (there is no bundling step):
 // - manifest.json is valid MV3 and every file it references exists
 // - every JavaScript file parses
-// - every module the content script imports is web-accessible on chatgpt.com
-//   (content scripts load their ES modules through web_accessible_resources)
+// - content scripts are classic scripts (no ES module syntax: they are not
+//   loaded as modules and no resources are exposed to the page)
 // - extension pages' module imports resolve to existing files
-// - no Chrome permissions beyond the expected (none)
+// - no Chrome permissions beyond the expected ones
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { join, dirname, relative, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -17,13 +17,14 @@ const rel = (p) => relative(ROOT, p).split('\\').join('/');
 
 const manifest = JSON.parse(readFileSync(join(ROOT, 'manifest.json'), 'utf8'));
 if (manifest.manifest_version !== 3) fail('manifest_version must be 3');
-const ALLOWED_PERMISSIONS = [];
+const ALLOWED_PERMISSIONS = ['https://chatgpt.com/*'];
 for (const p of [...(manifest.permissions || []), ...(manifest.host_permissions || [])]) {
   if (!ALLOWED_PERMISSIONS.includes(p)) fail(`unexpected permission: ${p}`);
 }
 
+if (manifest.background) fail('no background service worker is expected');
+if (manifest.web_accessible_resources) fail('no web_accessible_resources are expected');
 const referenced = [
-  manifest.background.service_worker,
   manifest.action.default_popup,
   ...manifest.content_scripts.flatMap((c) => c.js || []),
   ...Object.values(manifest.icons || {}),
@@ -73,19 +74,13 @@ function graph(entry) {
   return seen;
 }
 
-const war = (manifest.web_accessible_resources || []).flatMap((w) => w.resources);
-const globToRe = (g) => new RegExp(`^${g.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*')}$`);
 for (const cs of manifest.content_scripts) {
   for (const entry of cs.js) {
-    for (const f of graph(join(ROOT, entry))) {
-      const r = rel(f);
-      if (r === entry) continue;
-      if (!war.some((g) => globToRe(g).test(r))) fail(`content-script module ${r} is not in web_accessible_resources`);
-    }
+    const src = readFileSync(join(ROOT, entry), 'utf8');
+    if (/^\s*(import|export)\s/m.test(src) || /\bimport\(/.test(src)) fail(`content script ${entry} must be a classic script without imports`);
   }
 }
 
-graph(join(ROOT, manifest.background.service_worker));
 for (const html of walk(join(ROOT, 'src')).filter((f) => f.endsWith('.html'))) {
   const src = readFileSync(html, 'utf8');
   for (const m of src.matchAll(/<(?:script[^>]*src|link[^>]*href)="([^"]+)"/g)) {
@@ -100,4 +95,4 @@ if (errors.length) {
   console.error(errors.map((e) => `✗ ${e}`).join('\n'));
   process.exit(1);
 }
-console.log(`✓ manifest valid, ${referenced.length} referenced files present, ${jsFiles.length} JS files parse, content-script modules web-accessible, no extra permissions`);
+console.log(`✓ manifest valid, ${referenced.length} referenced files present, ${jsFiles.length} JS files parse, classic content script, only expected permissions`);

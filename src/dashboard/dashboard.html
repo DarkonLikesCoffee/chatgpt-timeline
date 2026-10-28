@@ -10,6 +10,16 @@
 <body>
   <header class="toolbar">
     <h1>Activity timeline</h1>
+    <div class="group load" role="group" aria-label="Load activity">
+      <select id="loadRange" aria-label="Period to load">
+        <option value="1">Last 24 hours</option>
+        <option value="3">Last 3 days</option>
+        <option value="7">Last 7 days</option>
+        <option value="30">Last 30 days</option>
+        <option value="90">Last 90 days</option>
+        <option value="365">Last 365 days</option>
+      </select><button id="loadBtn" class="primary" title="Read your conversations from chatgpt.com (you must be signed in there)">Load from ChatGPT</button><button id="cancelBtn" hidden>Cancel</button>
+    </div>
     <div class="group" role="group" aria-label="Zoom">
       <button class="seg" data-view="hour" title="Hour view (1)">Hour</button><button class="seg" data-view="day" title="Day view (2)">Day</button><button class="seg" data-view="week" title="Week view (3)">Week</button><button class="seg" data-view="month" title="Month view (4)">Month</button>
     </div>
@@ -43,6 +53,7 @@
     <button id="dataBtn" title="Inspect, export or delete stored data">Data</button>
   </header>
 
+  <div id="loadStatus" class="load-status" aria-live="polite"></div>
   <main class="layout">
     <section class="timeline" aria-label="Timeline">
       <div class="axis-row">
@@ -75,7 +86,8 @@
       <h2>Stored data</h2>
       <button value="close" aria-label="Close">✕</button>
     </form>
-    <p class="muted">Everything is stored only in this browser (IndexedDB of this extension). No message text is stored: only conversation ids, titles, URLs, event types, timestamps and message ids.</p>
+    <p class="muted">Everything is stored only in this browser (IndexedDB of this extension). No message text is stored: only conversation ids, titles, URLs, event types, timestamps and message ids, read from chatgpt.com when you click Load.</p>
+    <p id="lastLoad" class="muted"></p>
     <div id="stats" class="stats"></div>
     <div class="actions">
       <button id="exportBtn">Export JSON</button>

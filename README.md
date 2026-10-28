@@ -1,251 +1,172 @@
 # ChatGPT Activity Timeline
 
-A Chrome extension (Manifest V3) that records **when you send a message to ChatGPT** and **when ChatGPT finishes responding**, and shows that history as a Gantt-style timeline with one row per conversation.
+A Chrome extension (Manifest V3) that **reads your ChatGPT conversation history for a period you choose** (last 24 hours … last 365 days) and shows it as a Gantt-style timeline: one row per conversation, a marker when you sent each message, a marker when the response finished, and a bar between them.
 
-- Each row is one ChatGPT conversation, identified by the id in its URL (`/c/<id>`), so conversations with identical titles stay separate.
-- **●** marks the moment you sent a message, **◆** marks the moment the response finished, and a colored bar connects them.
-- Stopped responses (■) and failed ones (✕) are shown, but never as completed intervals.
-- Everything stays in your browser. No message text is stored, and nothing is sent anywhere.
+- Nothing runs while you chat. History is read only when you click **Load from ChatGPT**.
+- Rows are identified by the conversation id in its URL (`/c/<id>`), so conversations with identical titles stay separate.
+- **●** marks when you sent a message, **◆** when the response finished, and a bar connects them. Stopped (■) and failed (✕) responses are shown, but never as completed intervals. Regenerated responses get their own (purple) bar.
+- Everything is stored locally in your browser. No message text is stored or leaves the chatgpt.com tab.
 
-> **Verification status.** The extension is tested against a *simulated* ChatGPT page in a real Chromium build, plus unit and DOM-fixture tests. It has **not** been tested against the live chatgpt.com site, because the development environment could not reach chatgpt.com. The ChatGPT selectors were cross-checked against public open-source trackers updated in October 2026, but treat live behavior as unverified until you run the manual checklist in [Verifying on live ChatGPT](#verifying-on-live-chatgpt).
+> **How it gets the data, and the caveat.** ChatGPT's page does not show message timestamps, and there is no official API for your chat history. The extension therefore reads your conversations the way the ChatGPT web app itself does: through chatgpt.com's internal, **undocumented** `/backend-api` endpoints, using your signed-in session, from inside a chatgpt.com tab. These endpoints can change or start refusing requests at any time without notice, and automated access may conflict with OpenAI's terms of use. Use it at your own discretion. Development was done without access to chatgpt.com: the request and response formats follow the publicly known shape of these endpoints and are tested against fixtures, **not against the live service**. See [Known limitations](#known-limitations).
 
 ---
 
 ## Installation (unpacked)
 
-Requirements: Chrome or Chromium 116 or later. No build step is needed to run the extension.
+Requirements: Chrome or Chromium 116 or later. No build step.
 
 1. Get the code: `git clone <this repo>`, or download and unzip it.
-2. Open `chrome://extensions`.
-3. Turn on **Developer mode** (top right).
-4. Click **Load unpacked** and select the repository folder, i.e. the one containing `manifest.json`.
-5. Optional: pin **ChatGPT Activity Timeline** from the puzzle-piece menu.
-6. Reload any chatgpt.com tabs that were already open, since content scripts only attach to newly loaded pages.
+2. Open `chrome://extensions` and turn on **Developer mode** (top right).
+3. Click **Load unpacked** and select the folder containing `manifest.json`.
+4. Optional: pin **ChatGPT Activity Timeline** from the puzzle-piece menu.
+5. Reload any chatgpt.com tabs that were already open, since the content script only attaches to newly loaded pages.
 
 To update after pulling new code, click the reload icon on the extension's card in `chrome://extensions`, then reload your ChatGPT tabs.
 
 ## Usage
 
-1. Use ChatGPT at https://chatgpt.com as usual.
-2. Click the extension icon to see its status (active or paused, number of conversations and events, time of the last event). Click **Open timeline** to open the dashboard.
+1. Make sure you are signed in at https://chatgpt.com in this browser.
+2. Click the extension icon, then **Open timeline**.
+3. Choose a period (**Last 24 hours**, 3, 7, 30, 90 or 365 days) and click **Load from ChatGPT**.
+   - If a chatgpt.com tab is open, it is used. Otherwise chatgpt.com is opened in a background tab and closed when loading finishes.
+   - Progress shows below the toolbar ("Listing conversations…", "Reading conversations 5/12…"). You can **Cancel**; conversations read so far are kept.
+   - Loading again is fast: conversations that have not changed since the last load are skipped.
 
 ### Dashboard
 
 | Control | What it does |
 |---|---|
-| **Hour / Day / Week / Month** (or keys `1`–`4`) | Zoom level. Windows align to your local calendar: hours, midnights, Monday-start weeks, months. |
-| **‹ Now ›** (or `←` / `→`) | Move back or forward by one window, or jump to the window containing the current time. |
+| **Period + Load from ChatGPT** | Reads conversations updated in that period, with all of their messages. |
+| **Hour / Day / Week / Month** (or keys `1`–`4`) | Zoom level. Windows align to your local calendar (Monday-start weeks). |
+| **‹ Now ›** (or `←` / `→`) | Move back or forward by one window, or jump to now. |
 | Double-click a track | Zoom into the next finer level at that time. |
 | **Search titles** | Filters rows by title (also matches the conversation id). |
-| **Sort** | *Recent activity* (latest event first), *Chronological* (earliest first activity first), or *Title*. |
-| **Active in view** | Hides conversations with no recorded activity in the visible window. Turn it off to see every conversation. |
+| **Sort** | *Recent activity*, *Chronological* (earliest first activity first), or *Title*. |
+| **Active in view** | Hides conversations with no activity in the visible window. |
 | **Dates** | Keeps only conversations with activity between two dates. |
-| Conversation title | Opens the original conversation on chatgpt.com in a new tab. |
-| Click the row label area | Shows conversation details, its event list, its raw stored data, and a delete button. |
-| Click a marker | Shows the event type, exact local timestamp with milliseconds and time zone, the ISO/UTC instant, how the timestamp was obtained, and the associated request or response. |
-| Click a bar | Shows send time, completion (or stop/failure) time, duration, attempt number and association. |
-| **Data** | Statistics, **Export JSON**, **Delete all activity…**, and a table of conversations with per-conversation *Inspect* and *Delete* buttons. |
+| Conversation title | Opens the conversation on chatgpt.com. |
+| Click the row label area | Conversation details, its events, raw stored data, delete button. |
+| Click a marker | Event type, exact local time with milliseconds and time zone, ISO/UTC instant, where the time comes from. |
+| Click a bar | Send time, completion (or stop/failure) time, duration, attempt number. |
+| **Data** | Statistics, summary of the last load, **Export JSON**, **Delete all…**, per-conversation *Inspect* / *Delete*. |
 
-Visual encoding:
-- Green bar: message → completed response.
-- Purple bar: a regenerated response attempt. It starts when the regeneration was observed.
-- Grey hatched bar: an outcome that is not a completion (stopped or failed).
-- Faded marker: a response whose initiating message is unknown.
-- Overlapping intervals in one conversation are drawn in separate lanes, so each stays clickable.
-- The red vertical line is "now".
+Bars: green = message → completed response; purple = regenerated attempt (starts when that attempt started); grey hatched = stopped or failed (not a completion). Overlapping intervals in one conversation get separate lanes. The red line is "now". Gaps between bars only mean there are no messages; they say nothing about whether you were active. The dashboard virtualizes rows and handles thousands of conversations.
 
-If the selected period has no activity, the dashboard offers **Jump to latest activity**, **Show all conversations** and **Clear filters**.
+## What is read and how it becomes a timeline
 
-The dashboard virtualizes rows (only visible rows are in the DOM). A test confirms that building and filtering 3,000 conversations with 60,000 events runs well within interactive limits.
+For each conversation updated in the chosen period, the content script reads its message tree, the same data the web app uses to display a conversation, and keeps only:
 
-## What is recorded
-
-| Event | When | Timestamp |
-|---|---|---|
-| `USER_MESSAGE` | You submit a message (send button, Enter, or the *Send* button of an inline edit) **and** the message appears in the conversation. | The time of the send action (`timestampSource: "submit-intent"`). If no send action was captured, the time it appeared (`"dom-observed"`), but only when generation visibly followed: the stop control appeared within 3 s, or the response right after it streamed within 15 s. |
-| `ASSISTANT_RESPONSE_COMPLETED` | The response stopped streaming, ChatGPT's stop control disappeared, and the response text stopped changing. | The moment that state was first observed (`"dom-transition"`). It is held for 0.8 s (3 s if the stop control has never been seen on the page) to rule out pauses; the timestamp is not the confirmation time. |
-| `ASSISTANT_RESPONSE_INTERRUPTED` | Same as completed, but you clicked ChatGPT's stop button during that generation. | When generation ended. |
-| `ASSISTANT_RESPONSE_FAILED` | An error notice appeared in the response, or after your message with no response. | When generation ended, or when the error appeared. |
-
-**Not recorded:** message or response text, attachments, reading time, tab focus or visibility, mouse or keyboard activity (Enter and button clicks only timestamp a message that then actually appears), idle time, open tabs, cookies, credentials, and any site other than chatgpt.com / chat.openai.com. Opening or reading a conversation records nothing. Past conversations are never imported: only activity observed live after installation is recorded.
-
-Gaps between bars do not mean you were inactive; the timeline only shows recorded message/response events.
-
-## How detection works (investigation summary)
-
-ChatGPT has no public API for this, and the extension deliberately does **not** call ChatGPT's internal backend endpoints. It observes the rendered page with a `MutationObserver`. All ChatGPT-specific selectors are in one file, `src/content/chatgpt-adapter.js`, with fallbacks, so a UI change means updating one file.
-
-| Question | Finding / approach |
+| Kept | Not kept |
 |---|---|
-| Conversation identity | The URL path: `/c/<id>`, `/g/<gpt-or-project>/c/<id>`. A new chat starts at `/` with no id. Events are stored under a provisional id (`tmp-…`) and moved to the real id when ChatGPT pushes `/c/<id>` (detected because the same message elements are still rendered). Titles come from the sidebar link for that id, or `document.title`. |
-| Messages | **2026 layout:** each turn element (`data-turn-key`, the user message id) holds a user unit and an assistant unit (`data-chatgpt-search-unit-key` ending in `:user` / `:assistant`). Ids come from `data-chatgpt-search-message-ids` (user) and `data-chatgpt-selection-message-id` (assistant, with a turn-based placeholder until it appears). Only the main thread (`data-thread-find-target="conversation"`) is read, so the floating quick-chat is ignored. **Original layout:** each message element has `data-message-author-role="user|assistant"` and a stable `data-message-id`. Turns are grouped by `[data-testid^="conversation-turn-"]` (or `article`), so one response made of several messages (tool calls plus answer) counts as one response, identified by its first assistant message id. |
-| Submission | Capture-phase listeners classify Enter in a non-empty composer, clicks on `[data-testid="send-button"]` / `#composer-submit-button`, and inline-edit *Send* buttons. These only provide a timestamp. An event is created only when a *new* user message id then renders as the last turn, within 20 s. |
-| Generation state | `[data-testid="stop-button"]`, or the composer's primary button (`button.size-token-button-composer`) carrying a localized stop label, exists only while generating. In the 2026 layout, a turn state other than `complete` also marks the response as in progress. Per-response streaming markers (`.result-streaming`, `.streaming-animation`, `[data-is-streaming="true"]`, …) are also checked, along with whether the response's text length is still changing. |
-| Completion vs intermediate rendering | Complete only when *all* of these hold: no streaming marker, no stop control (if this is the last turn), text length unchanged, and the state persists for the hold period. A flicker of the stop control, or text still growing, restarts the check. |
-| Edits | Editing creates a new user message id at the same position (a new branch). It is recorded as a new `USER_MESSAGE` with `revisionOf` set to the replaced message id. |
-| Regeneration | A new assistant message id after the same user message, observed generating. It is recorded as another outcome with `responseKind: "regenerated"`, `previousResponseId`, and its own `startedAt`. Switching between existing alternatives with `‹ 1/2 ›` is not generation, so it records nothing. |
-| Stop / errors | A click on the stop control during a generation turns its outcome into `INTERRUPTED`. Error notices (`.text-token-text-error`, …) produce `FAILED`. |
-| History vs live | A message counts as live only if it is the newest user turn and either a send action preceded it or generation visibly followed it. Several messages appearing at once without a send action are history (page load, branch switch, lazy rendering). Turns that render within 3 s after navigation are never considered live, so a page load is not mistaken for a send. If a just-sent message is re-rendered under a new id, it is treated as the same message. |
-| SPA navigation | URL changes are detected via mutations, `popstate` and a 1 s poll. On navigation, completions that were observed but not yet confirmed are saved for the old conversation; tracking state then resets. |
-| Same conversation in several tabs | Event ids are deterministic (`user:<messageId>`, `resp:<responseMessageId>`, `fail:<messageId>`). The service worker keeps one record per id, preferring the better timestamp source, then the earliest time. |
-| Association | A response is linked to the user turn **immediately preceding it in the rendered thread** (`association: "dom-adjacent"`), never "the latest user message". Pairing in the timeline uses message ids, so out-of-order completions across tabs or conversations pair correctly. If no user turn precedes the response, it is stored with `association: "none"` and shown faded, without an interval. |
+| conversation id, title, creation and update time | message text, attachments, images, files |
+| per message: id, parent/children ids, author role (user / assistant / tool / system), creation and update time, status, finish type, whether it is hidden, content type | model names, tool inputs and outputs, metadata, your account details |
+
+The session token used for the requests stays in the chatgpt.com tab's memory and is never stored or passed to the extension.
+
+Conversion rules (`src/shared/convert.js`):
+
+- **`USER_MESSAGE`**: every visible message you sent, at its creation time (exact, from ChatGPT). Hidden context messages (e.g. custom instructions) are skipped.
+- **Response**: each non-user child of your message starts one response attempt. The attempt is that branch up to your next message, including tool calls, reasoning steps and the final answer.
+  - **Completion time**: the latest *update* time stored for the attempt's assistant messages. If ChatGPT stored no update time, it is the *creation* time of the final message, which is earlier than the true completion (it is when the final message started). The details panel and the Data dialog say which was used.
+  - **Outcome**: from the attempt's last assistant message. `in_progress` gives no event; interrupted / partial gives `ASSISTANT_RESPONSE_INTERRUPTED`; an error status gives `ASSISTANT_RESPONSE_FAILED`; anything else gives `ASSISTANT_RESPONSE_COMPLETED`.
+- **Regeneration**: several attempts for one message are separate responses (`responseKind: "regenerated"`, ordered by start time).
+- **Edits**: an edited message is a new message on a new branch, marked `revisionOf` the earlier one. **All branches are shown**, not only the one currently displayed in ChatGPT.
+- **Association** is exact: a response belongs to the user message it descends from in the tree (`association: "server-tree"`).
 
 ## Architecture
 
 ```
-manifest.json                 MV3 manifest (no permissions; content script on chatgpt.com / chat.openai.com)
-src/content/loader.js         classic content script → dynamically imports the ES-module implementation
-src/content/main.js           runtime: MutationObserver, intent listeners, timers → tracker → transport
-src/content/chatgpt-adapter.js all ChatGPT DOM knowledge: DOM → snapshot, intent classification, URL → id
-src/content/tracker.js        pure state machine: snapshots + intents → events (no DOM, fully unit-tested)
-src/content/transport.js      ordered delivery to the service worker with retry/backoff
-src/background/service-worker.js  stateless MV3 worker: routes messages to handlers
-src/background/handlers.js    validation/whitelisting, pause setting, writes via the DB layer
-src/shared/db.js              IndexedDB schema, migrations, queries, dedupe/merge policy
-src/shared/constants.js       event types, message names, enums
-src/timeline/model.js         events → rows, intervals, lanes; search/sort/filter
-src/timeline/scale.js         local-calendar windows, ticks (DST-aware), pixel mapping, formatting
-src/timeline/layout.js        per-row pixel layout (markers/bars/lanes)
-src/dashboard/                timeline page (virtualized rows, details panel, data dialog)
-src/popup/                    status, pause/resume, open dashboard
-scripts/check.js              static build checks; scripts/make-icons.js regenerates icons
-test/unit/                    node:test unit + jsdom integration tests
-test/e2e/                     Playwright: real Chromium + unpacked extension + simulated ChatGPT page
+manifest.json                content script on chatgpt.com, host access to chatgpt.com, no service worker
+src/content/history.js       classic content script: idle until the dashboard connects; reads
+                             /api/auth/session and /backend-api, strips text, streams results back
+src/dashboard/loader.js      finds or opens a chatgpt.com tab, connects (chrome.tabs.connect), relays progress
+src/dashboard/               timeline page (load controls, virtualized rows, details, data dialog)
+src/shared/convert.js        message tree → events (pure, unit-tested)
+src/shared/db.js             IndexedDB schema, migrations, queries
+src/timeline/                pairing, windows/ticks (DST-aware), pixel layout (pure)
+src/popup/                   stats and "Open timeline"
+scripts/check.js             static checks; scripts/make-icons.js regenerates icons
+test/unit/                   node:test unit tests (converter, content script in a VM, loader, DB, timeline)
+test/e2e/                    Playwright: real Chromium + the unpacked extension + a local HTTPS stand-in for chatgpt.com
 ```
 
-Main decisions:
-- **No build step and no runtime dependencies.** The code is plain ES modules. Manifest content scripts cannot be modules, so a 10-line classic `loader.js` dynamically imports `main.js`. For that reason the content-script modules are listed in `web_accessible_resources` for chatgpt.com only. `npm run check` verifies that every imported module is covered.
-- **The tracker is pure.** The DOM adapter reduces the page to a small snapshot (`turns`, `generating`, ids, lengths); the tracker turns snapshots into events. This makes edge cases (out-of-order completion, edits, regeneration, navigation, multi-tab) testable without a browser.
-- **The service worker is stateless.** Every message is one IndexedDB transaction. MV3 suspension or restart cannot lose anything. A message that fails during worker startup is retried by the content script. Deterministic ids make retries and duplicate reports harmless.
-- **The dashboard reads IndexedDB directly** (same extension origin) and refreshes when the worker broadcasts `db:changed`.
+Design decisions:
+- **Requests come from a chatgpt.com tab**, not from the extension. They are then ordinary same-origin requests with your session, and pass the site's own protections like the web app's requests do.
+- **Text is removed at the source.** Only structure and timestamps cross from the tab to the extension.
+- **Incremental loads.** Each conversation's update time is stored, and unchanged conversations are skipped. A changed conversation is replaced as a whole, so edits, regenerations and deletions inside it are reflected.
+- **Polite fetching.** At most 3 conversation requests run at a time. Rate limiting (HTTP 429) and server errors are retried with backoff (honouring `Retry-After`). One unreadable conversation is skipped; sign-in problems or persistent rate limiting stop the load with a clear message.
+- **No build step, no runtime dependencies, no service worker.** The dashboard and popup open IndexedDB directly.
 
 ## Data model
 
-Database `chatgpt-activity-timeline` (IndexedDB, extension origin), schema version **2**:
+Database `chatgpt-activity-timeline` (IndexedDB, extension origin), schema version 2:
 
-- `conversations` (key `id`): `{ id, title, url, firstObservedAt, lastActivityAt }`. Index: `lastActivityAt`.
+- `conversations` (key `id`): `{ id, title, url, firstObservedAt (creation time), lastActivityAt, serverUpdateTime, fetchedAt }`.
 - `events` (key `id`):
   ```js
   {
-    id: 'user:<messageId>' | 'resp:<responseId>' | 'fail:<messageId>',
+    id: 'user:<messageId>' | 'resp:<firstMessageIdOfAttempt>',
     conversationId, type,          // USER_MESSAGE | ASSISTANT_RESPONSE_COMPLETED | _INTERRUPTED | _FAILED
     timestamp,                     // epoch milliseconds (UTC instant)
-    timestampSource,               // submit-intent | dom-transition | dom-observed
-    messageId,                     // ChatGPT message id of this message/response
-    requestMessageId, requestEventId,   // responses: the initiating user message (if identifiable)
-    association,                   // dom-adjacent | none
-    responseKind, previousResponseId,   // initial | regenerated (+ the attempt it replaced)
-    startedAt,                     // responses: when generation was first observed
-    revisionOf,                    // edited messages: the message id it replaced
-    recordedAt                     // when the worker stored it
+    timestampSource,               // server-create-time | server-update-time
+    messageId,
+    requestMessageId, requestEventId, association,   // responses
+    responseKind, previousResponseId, startedAt,      // responses
+    revisionOf                     // edited messages
   }
   ```
   Indexes: `conversationId`, `timestamp`, `requestMessageId`, `[conversationId, timestamp]`.
-- `meta` (key `key`): settings, currently `paused`.
+- `meta`: `lastLoad` (time, period, counts).
 
-Timestamps are always epoch milliseconds, i.e. exact instants. The dashboard displays them in the browser's local time zone and also shows the ISO/UTC form. Migrations live in `MIGRATIONS` in `src/shared/db.js`. Each entry upgrades one version, and released entries are never edited. The upgrade from v1 to v2 is tested on a v1 database containing data.
-
-Export format (`Data → Export JSON`): `{ format: "chatgpt-activity-timeline", schemaVersion, exportedAt, conversations: [...], events: [...] }`.
+Times are stored as instants and displayed in your local time zone (ISO/UTC also shown). Migrations live in `MIGRATIONS` in `src/shared/db.js`, one entry per version; released entries are never edited.
 
 ## Permissions
 
-The manifest requests **no Chrome permissions and no host permissions**. It declares:
-- a content script for `https://chatgpt.com/*` and `https://chat.openai.com/*` (Chrome will say it can "read and change your data on chatgpt.com"; that is required to observe the page);
-- `web_accessible_resources` for the extension's own content-script modules, on those two sites only.
-
-There is no remote code, analytics, network request or `externally_connectable`. The extension pages' CSP is `script-src 'self'`.
+- **Host access to `https://chatgpt.com/*`**: injects the content script, and lets the dashboard find an open ChatGPT tab. Chrome describes this as "read and change your data on chatgpt.com".
+- No other permissions. There are no remote servers, analytics or external network requests: the only requests go to chatgpt.com, from a chatgpt.com tab, when you click Load. The extension pages' CSP is `script-src 'self'`.
 
 ## Privacy and data management
 
-- Inspect: **Data** lists every conversation with event counts. **Inspect** or clicking a row shows its events and **Show stored data** (raw JSON). You can also open DevTools on the dashboard → Application → IndexedDB → `chatgpt-activity-timeline`.
+- Inspect: **Data** lists every conversation with event counts. **Inspect** (or clicking a row) shows its events and **Show stored data** (raw JSON). You can also use DevTools on the dashboard → Application → IndexedDB.
 - Export: **Data → Export JSON**.
-- Delete one conversation's activity: select the row → **Delete this conversation's activity**, or **Data → Delete** (with confirmation). This never touches the conversation in ChatGPT.
+- Delete one conversation's data: select the row → **Delete this conversation's activity**, or **Data → Delete** (with confirmation). It is read again by a later load if it is still in the period. This never touches the conversation in ChatGPT.
 - Delete everything: **Data → Delete all activity…** (two confirmations).
-- Pause: popup → **Pause tracking**. While paused, the worker discards incoming events.
-- Uninstalling the extension deletes its IndexedDB data.
-
-The content script sends only ids, timestamps, the conversation title and URL. The worker additionally whitelists stored fields, drops anything else, and accepts only chatgpt.com / chat.openai.com URLs.
+- Uninstalling the extension deletes its data.
 
 ## Testing
 
 ```bash
-npm install          # dev-only: jsdom, fake-indexeddb (no runtime dependencies)
-npm run check        # manifest/files/syntax/web-accessible-module checks
-npm test             # unit + jsdom integration tests (node:test)
-npm run test:e2e     # Playwright + Chromium; skipped if Playwright is not installed
-npm run test:all     # all of the above
+npm install          # dev-only: jsdom, fake-indexeddb
+npm run check        # manifest, files, syntax, classic content script, permissions
+npm test             # unit tests (node:test)
+npm run test:e2e     # Playwright + Chromium (skipped if Playwright is not installed); needs openssl
+npm run test:all
 ```
 
-Coverage:
-- **Event processing** (`test/unit/tracker.test.js`): message creation and timing, fallback timing, history is never recorded, stale intents, completion vs intermediate rendering, quiet-period fallback, overlapping and out-of-order responses, stop and failure (inside a response and with no response), regeneration and branch switching, edits, association `none`, duplicate prevention, provisional-id rebind, SPA navigation, returning to a generating conversation, title updates, two independent tabs, flush on page hide.
-- **DOM adapter** (`test/unit/adapter.test.js`, fixture `test/fixtures/chatgpt-conversation.html`): URL id parsing, turn grouping, streaming and stop detection, errors, titles, intent classification, and a check that snapshots contain no message text.
-- **Persistence** (`test/unit/db.test.js`, `handlers.test.js`): schema creation, the v1→v2 upgrade keeping data, save and query, dedupe and merge policy, title updates, rebind, export, clear, per-conversation delete, validation, field whitelisting, pause, and worker restart.
-- **Timeline** (`test/unit/timeline.test.js`): pairing, out-of-order pairing, pending and unpaired, regeneration, lanes for overlaps, pixel positions and clipping, zoom invariance of timestamps, local windows and DST days (23 h / 25 h) in `America/New_York`, time-zone display, search, sort and filter, same-title rows, empty and large datasets.
-- **Integration** (`test/unit/runtime.test.js`): the real runtime on a simulated ChatGPT page in jsdom (`test/fixtures/mock-chatgpt.js`) feeding the real handler and IndexedDB. Covers new chat → id rebind, stop, failure, regeneration, SPA navigation, multiple tabs (same and different conversations), worker suspension and "browser restart".
-- **End-to-end** (`test/e2e/extension.e2e.test.js`): the unpacked extension in Chromium. `https://chatgpt.com/**` is intercepted and served the simulated page with a strict nonce-based CSP. Covers recording, two concurrent tabs, stop and failure, reload not re-recording history, dashboard rendering and selection, worker suspension via DevTools Protocol `ServiceWorker.stopAllWorkers` (verified by a changed worker start time), and a browser restart with the same profile keeping history. Also covers the popup, JSON export (checked to contain no message text), per-conversation delete and delete-all.
-
-The simulated page reproduces the markup and behavior the adapter relies on. It is not ChatGPT.
-
-## Verifying on live ChatGPT
-
-Because live testing was not possible here, please run this checklist once after installing:
-
-1. Open the dashboard in one tab and chatgpt.com in another.
-2. Send a message in a new chat. Within about 1 s of the response finishing, a row should appear (it may first show as "New chat") with ● → bar → ◆. The title should update after ChatGPT names the chat.
-3. Send in two different conversations in two tabs at once. Each row should get its own bar.
-4. Click **Stop** during a response: you should get a ■ and a hatched bar.
-5. Regenerate a response: you should get a purple bar starting at the regeneration.
-6. Edit a previous message and resubmit: you should get a new ●. Its details should show "Edited version of".
-7. Reload a long conversation, and switch branches with ‹ 1/2 ›: nothing new should be recorded.
-
-If any step fails, see [Troubleshooting](#troubleshooting).
-
-## Troubleshooting
-
-**1. Is the tracker running on the tab?** When the extension starts on a ChatGPT tab, the page's DevTools console shows one line:
-`[ChatGPT Timeline] v0.2.0 tracking this tab. …`. Other console messages on chatgpt.com, such as `Feature is disabled`, Statsig warnings, or CSP errors from `runner.html`, come from ChatGPT itself or from other extensions and are unrelated. If the line is missing:
-- reload the ChatGPT tab (required after installing, updating or reloading the extension);
-- check that the extension is enabled in `chrome://extensions` and shows no errors there.
-
-**2. Open the popup on the ChatGPT tab.** Under **This tab** it lists:
-- whether the tracker is running;
-- how many of your messages and responses it can see on the page;
-- how many send actions it detected;
-- whether it has recognized ChatGPT's stop button;
-- what it has recorded so far.
-
-**3. Copy diagnostics.** If messages are not detected, send a message, wait about 10 seconds for the response, then click **Copy diagnostics** (or **Save diagnostics file**) in the popup and include it in a bug report. It contains:
-- an outline of the page's element structure: tag names, class names, `data-*`/role attributes, button labels, and text *lengths*;
-- what the page added in the 10 s after your last send, with button states and turn states at 0, 0.4, 1.5, 4 and 9 s;
-- counters.
-
-It never contains message text, titles or links. With it, the selectors in `src/content/chatgpt-adapter.js` can be fixed.
-
-**4. Verbose log.** In the ChatGPT tab's console, enable the *Verbose* level to see one `[ChatGPT Timeline]` debug line per recorded event.
+- `convert.test.js`: messages, completions (update time vs creation-time fallback), tool/reasoning chains, regenerations, edits (all branches), interrupted / failed / in-progress, hidden context messages, clock skew, time formats.
+- `history.test.js`: the real content script in a VM against a fake backend. Covers pagination and the period cut-off, skipping unchanged conversations, that no message text or token leaves the script, signed out, rate-limit retry, one bad conversation, authorization failure, cancel.
+- `loader.test.js`: uses an open tab, otherwise opens a background tab and closes it; error propagation; waits for storage; cancel.
+- `db.test.js`: schema creation, the v1→v2 upgrade keeping data, replace per conversation, unchanged-update lookup, export, clear, delete, validation.
+- `timeline.test.js`: pairing, lanes for overlaps, positions, zoom invariance, local windows and DST days, time zones, search/sort/filter, same titles, empty and large datasets (3,000 conversations / 60,000 events).
+- `extension.e2e.test.js`: the unpacked extension in Chromium. A local HTTPS server stands in for chatgpt.com (`--host-resolver-rules`, self-signed certificate) and serves fixture conversations shaped like the API. Covers:
+  - a load through a background tab, which is then closed;
+  - a second load through an open tab that skips unchanged conversations;
+  - rendering, details and links;
+  - the signed-out message;
+  - persistence across a browser restart, plus the popup, export, delete and clear.
 
 ## Known limitations
 
-- **Not verified against live chatgpt.com** (see above). ChatGPT's markup changes without notice, and any selector in `chatgpt-adapter.js` may need updating.
-- **ChatGPT layouts.** Two layouts are supported:
-  - The original layout: `data-message-author-role` / `data-message-id`, with `data-testid` send/stop buttons.
-  - The layout seen on a user's chatgpt.com on 2026-10-28 (Spanish UI). Each turn (`data-turn-key` = your message id) holds a user unit and an assistant unit (`data-chatgpt-search-unit-key=…:user|:assistant`), with a per-turn `data-talvt-turn-state`. The composer buttons have no test ids, so the stop button is recognized by its localized label on the composer's primary button ("Stop", "Detener", "Arrêter", …).
-
-  The 2026 support is built from that user's diagnostics and tested against a simulated page with the same structure. Details not visible in those diagnostics, such as the turn state's value *while* streaming and error rendering, are handled defensively but are unconfirmed. Stop-button recognition depends on the UI language being one of the listed ones (`STOP_LABEL` in `chatgpt-adapter.js`).
-- **Only live activity is recorded.** Messages sent before installation, on other devices or browsers, from the mobile or desktop apps, or while tracking is paused do not appear. A response to such a message (for example, finishing in a tab you opened later) is stored without an interval and shown faded.
-- **Navigating away or closing the tab during generation** loses that response's completion: the page no longer shows it. The message remains, marked "no response outcome recorded". If you return while it is still generating, the completion is recorded. If you return after it finished, it is not.
-- **Background tabs:** Chrome throttles hidden tabs. The completion timestamp comes from the DOM mutation that ended generation, which stays accurate as long as ChatGPT keeps updating the DOM in the background. Saving can be delayed by throttled timers, and a completion observed but not yet confirmed is saved immediately when the page is closed or navigated away.
-- **Timestamp precision:** send times come from the send action (milliseconds). Completion times are within about 50 ms of the DOM change in a foreground tab.
-- **Regeneration start time** is when the new response element first appears, which is slightly after the click. If ChatGPT re-renders a regenerated response without a new message id, it cannot be told apart from the original.
-- **Message-id stability:** association relies on ChatGPT keeping a message's `data-message-id` stable. If a client-side id were replaced by a server id after rendering, that message would be missed rather than duplicated.
-- **Sending without a recognized control** (voice mode, a new kind of button) falls back to the "message appeared and generation started within 3 s" rule, with a less precise `dom-observed` timestamp. Voice conversations are otherwise untested.
-- **Temporary chats** never get a conversation URL. They stay under a provisional id shown as "New chat (no conversation id yet)".
-- **Error detection** uses ChatGPT's error-text styling (`.text-token-text-error`), which is a heuristic.
-- **Web-accessible modules:** because the content script loads ES modules, chatgpt.com could detect that this extension is installed by probing its module URLs. It cannot read your data that way.
-- Concurrent generations within one conversation are handled by the tracker and model, but ChatGPT normally prevents them.
+- **Undocumented API, not verified against the live site.** The endpoints (`/api/auth/session`, `/backend-api/conversations?offset&limit&order=updated`, `/backend-api/conversation/<id>`) and fields (`mapping`, `author.role`, `create_time`, `update_time`, `status`, `metadata.finish_details`, `is_visually_hidden_from_conversation`) follow the publicly known shape of ChatGPT's web API. They were not observed live during development. If ChatGPT changes them, or requires extra headers or anti-automation tokens, loading fails with the HTTP status shown in the dashboard.
+- **Completion times are approximate.** ChatGPT stores when messages were *created*. When an update time is stored for the final assistant message it is used and is close to completion. Otherwise the final message's creation time is used, which marks when the final answer started, not when it finished. For long answers the bar is then too short. The Data dialog reports how many responses had an update time.
+- **Projects, custom GPTs, archived and temporary chats:** only conversations returned by the main conversation list are read. Archived chats are excluded, temporary chats are never stored by ChatGPT, and some project conversations may not appear in that list.
+- **Deleted conversations** disappear from ChatGPT but stay in the timeline until you delete them here.
+- **Very long periods** mean many requests (one per conversation). Loading 365 days of heavy use can take minutes and may hit rate limits; reloading later only fetches conversations that changed.
+- All times come from ChatGPT's servers, so they don't depend on your computer's clock. They are shown in your browser's time zone.
 
 ## Next improvements
 
-1. Run the live verification checklist and adjust `chatgpt-adapter.js` selectors as needed. Add a small "diagnostics" view to the popup showing which selectors matched on the current tab.
-2. Import from a previously exported JSON file (export already exists).
-3. Per-day activity summaries (count of exchanges, total waiting time) and a minimap for long ranges.
-4. Optional per-project grouping of rows using ChatGPT project URLs (`/g/g-p-…`).
+1. Confirm the endpoints and fields against the live site, and adjust `history.js` / `convert.js` if needed (in particular whether `update_time` is reliably set on assistant messages).
+2. Read project (`/g/g-p-…`) conversations explicitly if the main list omits them.
+3. Optionally show only the branch currently displayed in ChatGPT instead of all branches.
+4. Import from a ChatGPT data export as an official, offline alternative source.

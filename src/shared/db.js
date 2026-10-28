@@ -1,11 +1,9 @@
-// IndexedDB persistence for conversations and events.
+// IndexedDB persistence for conversations and events loaded from ChatGPT.
 //
-// The database is owned by the extension origin, so the service worker and the
-// dashboard open the same database. Every write is a single IndexedDB
-// transaction; nothing is kept only in memory, so service-worker suspension
-// cannot lose data.
+// The database belongs to the extension origin; the dashboard and the popup
+// open it directly. Every write is a single transaction.
 
-import { SOURCE_RANK, RESPONSE_TYPES } from './constants.js';
+import { RESPONSE_TYPES } from './constants.js';
 
 export const DB_NAME = 'chatgpt-activity-timeline';
 
@@ -64,34 +62,6 @@ export function openDatabase({ factory = globalThis.indexedDB, name = DB_NAME, m
   });
 }
 
-// Decide which of two reports of the same event to keep. Better timestamp
-// sources win; between equal sources the earliest observation wins.
-export function preferEvent(existing, incoming) {
-  if (!existing) return incoming;
-  const a = SOURCE_RANK[existing.timestampSource] || 0;
-  const b = SOURCE_RANK[incoming.timestampSource] || 0;
-  if (b !== a) return b > a ? incoming : existing;
-  return incoming.timestamp < existing.timestamp ? incoming : existing;
-}
-
-function mergeConversation(existing, conv, activityAt) {
-  const base = existing || {
-    id: conv.id,
-    title: '',
-    url: '',
-    firstObservedAt: activityAt ?? Date.now(),
-    lastActivityAt: activityAt ?? 0,
-  };
-  const next = { ...base };
-  if (conv.title) next.title = conv.title;
-  if (conv.url) next.url = conv.url;
-  if (activityAt != null) {
-    next.firstObservedAt = Math.min(next.firstObservedAt, activityAt);
-    next.lastActivityAt = Math.max(next.lastActivityAt || 0, activityAt);
-  }
-  return next;
-}
-
 export class TimelineDB {
   constructor(db) {
     this.db = db;
@@ -105,67 +75,26 @@ export class TimelineDB {
     this.db.close();
   }
 
-  // Store one event and update its conversation. Returns { stored, event }.
-  // `stored` is false when an equal or better report already existed.
-  async recordEvent(event, conversation) {
-    validateEvent(event);
-    const tx = this.db.transaction(['events', 'conversations'], 'readwrite');
-    const events = tx.objectStore('events');
-    const convs = tx.objectStore('conversations');
-    const existing = await req(events.get(event.id));
-    const keep = preferEvent(existing, event);
-    const stored = keep === event;
-    if (stored) {
-      events.put(keep);
-      const conv = await req(convs.get(event.conversationId));
-      convs.put(mergeConversation(conv, { ...conversation, id: event.conversationId }, event.timestamp));
-    } else if (conversation?.title) {
-      const conv = await req(convs.get(event.conversationId));
-      if (conv && conv.title !== conversation.title) convs.put({ ...conv, title: conversation.title });
+  // Replace a conversation and all of its events (the conversation as
+  // loaded from ChatGPT is the source of truth).
+  async replaceConversation(conversation, events) {
+    for (const e of events) {
+      validateEvent(e);
+      if (e.conversationId !== conversation.id) throw new TypeError('event belongs to another conversation');
     }
+    const tx = this.db.transaction(['events', 'conversations'], 'readwrite');
+    const store = tx.objectStore('events');
+    const old = await req(store.index('conversationId').getAllKeys(conversation.id));
+    for (const k of old) store.delete(k);
+    for (const e of events) store.put(e);
+    tx.objectStore('conversations').put({ ...conversation, fetchedAt: Date.now() });
     await done(tx);
-    return { stored, event: keep };
   }
 
-  // Update title/url of a conversation that already has activity. Visiting a
-  // conversation never creates a record by itself.
-  async updateConversationMeta(conversation) {
-    const tx = this.db.transaction('conversations', 'readwrite');
-    const store = tx.objectStore('conversations');
-    const existing = await req(store.get(conversation.id));
-    let changed = false;
-    if (existing) {
-      const next = mergeConversation(existing, conversation, null);
-      changed = next.title !== existing.title || next.url !== existing.url;
-      if (changed) store.put(next);
-    }
-    await done(tx);
-    return changed;
-  }
-
-  // Move events recorded under a provisional id (a new chat before ChatGPT
-  // assigned its URL) to the real conversation id.
-  async rebindConversation(fromId, toId, conversation = {}) {
-    if (fromId === toId) return 0;
-    const tx = this.db.transaction(['events', 'conversations'], 'readwrite');
-    const events = tx.objectStore('events');
-    const convs = tx.objectStore('conversations');
-    const moved = await req(events.index('conversationId').getAll(fromId));
-    for (const e of moved) events.put({ ...e, conversationId: toId });
-    const from = await req(convs.get(fromId));
-    let to = await req(convs.get(toId));
-    if (from) {
-      to = mergeConversation(to, { id: toId }, from.firstObservedAt);
-      to = mergeConversation(to, { id: toId }, from.lastActivityAt);
-      if (!to.title && from.title) to.title = from.title;
-      convs.delete(fromId);
-    }
-    if (to || moved.length) {
-      to = mergeConversation(to, { ...conversation, id: toId }, null);
-      convs.put(to);
-    }
-    await done(tx);
-    return moved.length;
+  // Server update time of each stored conversation, to skip unchanged ones.
+  async knownUpdateTimes() {
+    const all = await this.listConversations();
+    return Object.fromEntries(all.filter((c) => c.serverUpdateTime != null).map((c) => [c.id, c.serverUpdateTime]));
   }
 
   async getConversation(id) {

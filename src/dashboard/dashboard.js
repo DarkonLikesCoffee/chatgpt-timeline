@@ -1,5 +1,7 @@
 import { TimelineDB } from '../shared/db.js';
-import { EventType, Msg, PROVISIONAL_PREFIX } from '../shared/constants.js';
+import { EventType, PROVISIONAL_PREFIX } from '../shared/constants.js';
+import { convertConversation } from '../shared/convert.js';
+import { loadHistory } from './loader.js';
 import { buildRows, selectRows, shortId } from '../timeline/model.js';
 import { layoutRow, ROW_HEIGHT } from '../timeline/layout.js';
 import {
@@ -17,10 +19,12 @@ const TYPE_LABEL = {
   [EventType.ASSISTANT_RESPONSE_FAILED]: 'Response failed',
 };
 const SOURCE_LABEL = {
-  'submit-intent': 'send action, confirmed by the rendered message',
-  'dom-transition': 'page state change (generation ended)',
-  'dom-observed': 'first time the page showed it (approximate)',
+  'server-create-time': 'creation time stored by ChatGPT',
+  'server-update-time': 'last update of the response stored by ChatGPT (close to completion)',
 };
+const DAY = 24 * 3600 * 1000;
+// Load range -> view to show afterwards.
+const RANGE_VIEW = { 1: 'day', 3: 'week', 7: 'week', 30: 'month', 90: 'month', 365: 'month' };
 
 const state = {
   db: null,
@@ -35,6 +39,8 @@ const state = {
   activeFrom: null,
   activeTo: null,
   selection: null, // { kind: 'event'|'interval'|'row', rowId, id }
+  loadDays: 7,
+  loading: null,
 };
 
 function esc(s) {
@@ -47,13 +53,14 @@ function loadPrefs() {
     if (VIEWS.includes(p.view)) state.win = windowFor(p.view, Date.now());
     if (p.sort) state.sort = p.sort;
     if (typeof p.activeOnly === 'boolean') state.activeOnly = p.activeOnly;
+    if (RANGE_VIEW[p.loadDays]) state.loadDays = p.loadDays;
   } catch { /* storage unavailable */ }
   if (!state.win) state.win = windowFor('day', Date.now());
 }
 
 function savePrefs() {
   try {
-    localStorage.setItem('timeline-prefs', JSON.stringify({ view: state.win.view, sort: state.sort, activeOnly: state.activeOnly }));
+    localStorage.setItem('timeline-prefs', JSON.stringify({ view: state.win.view, sort: state.sort, activeOnly: state.activeOnly, loadDays: state.loadDays }));
   } catch { /* storage unavailable */ }
 }
 
@@ -148,7 +155,7 @@ function renderRows() {
     });
     html.push(
       `<div class="row${sel && sel.rowId === row.id ? ' selected' : ''}" data-row="${esc(row.id)}" style="top:${i * ROW_HEIGHT}px">` +
-        `<div class="label" data-kind="row">${link}<span class="id" title="Conversation id: ${esc(row.id)}">${esc(shortId(row.id))}</span><span class="count" title="Recorded events">${row.events.length}</span></div>` +
+        `<div class="label" data-kind="row">${link}<span class="id" title="Conversation id: ${esc(row.id)}">${esc(shortId(row.id))}</span><span class="count" title="Events">${row.events.length}</span></div>` +
         `<div class="track">${parts.join('')}</div></div>`,
     );
   }
@@ -182,14 +189,14 @@ function renderEmpty() {
   }
   el.hidden = false;
   if (!state.rows.length) {
-    el.innerHTML = `<h2>No activity recorded yet</h2>
-      <p>Open <a href="https://chatgpt.com/" target="_blank" rel="noopener">chatgpt.com</a> and send a message. The time you send it and the time the response finishes will appear here, one row per conversation.</p>
-      <p class="muted">Conversations you only open or read are not recorded, and past messages are never imported.</p>`;
+    el.innerHTML = `<h2>No activity loaded yet</h2>
+      <p>Choose a period above and click <b>Load from ChatGPT</b>. Your conversations from that period are read from chatgpt.com (you must be signed in there), one row per conversation.</p>
+      <p class="muted">Only titles, message ids and timestamps are stored, locally in this browser. No message text.</p>`;
     return;
   }
   const latest = state.rows.reduce((m, r) => Math.max(m, r.lastActivityAt ?? -Infinity), -Infinity);
   const filtered = state.query || state.activeFrom != null || state.activeTo != null;
-  el.innerHTML = `<h2>No recorded activity ${state.activeOnly ? 'in this period' : 'matches'}</h2>
+  el.innerHTML = `<h2>No activity ${state.activeOnly ? 'in this period' : 'matches'}</h2>
     <p>${esc(formatWindow(state.win, LOCALE))}${filtered ? ' · search or date filters are active' : ''}</p>
     <div class="actions">
       ${Number.isFinite(latest) ? '<button data-action="latest">Jump to latest activity</button>' : ''}
@@ -225,7 +232,7 @@ function exact(t) {
 function convHeader(row) {
   const link = row.conversation.url
     ? `<a href="${esc(row.conversation.url)}" target="_blank" rel="noopener noreferrer">Open conversation in ChatGPT ↗</a>`
-    : '<span class="muted">No conversation URL (the chat had not been saved when recorded)</span>';
+    : '<span class="muted">No conversation URL</span>';
   return `<h2>${esc(row.title)}</h2><p>${link}</p>`;
 }
 
@@ -247,7 +254,7 @@ function renderDetails() {
         iv.regenerated ? ['Regeneration observed', exact(iv.start)] : null,
         [TYPE_LABEL[r.type], exact(r.timestamp)],
         ['Duration', esc(formatDuration(iv.end - iv.start))],
-        ['Association', r.association === 'dom-adjacent' ? 'Response directly follows this message in the conversation' : 'Uncertain'],
+        ['Association', r.association === 'server-tree' ? 'Reply to this message in ChatGPT\'s conversation tree' : 'Uncertain'],
         ['Message id', `<code>${esc(iv.request.messageId)}</code>`],
         ['Response id', r.messageId ? `<code>${esc(r.messageId)}</code>` : '—'],
       ].filter(Boolean))}
@@ -270,7 +277,7 @@ function renderDetails() {
         pairs.push([`Response${ivs.length > 1 ? ` #${iv.attempt}` : ''}`, `${esc(statusText(iv))} at ${esc(time(iv.response.timestamp))} (${esc(formatDuration(iv.response.timestamp - e.timestamp))} after sending)`]);
       }
       if (e.revisionOf) pairs.push(['Edited version of', `<code>${esc(e.revisionOf)}</code>`]);
-      if (!ivs.length) note = 'No response outcome was recorded for this message (still generating, the tab was closed or navigated away during generation, or the outcome could not be detected).';
+      if (!ivs.length) note = 'ChatGPT has no finished response to this message (it was still generating when loaded, or it failed without a response).';
     } else {
       const req = e.requestMessageId ? [...state.events].find((x) => x.messageId === e.requestMessageId && x.type === EventType.USER_MESSAGE) : null;
       if (req) pairs.push(['In response to message sent', exact(req.timestamp)]);
@@ -278,7 +285,7 @@ function renderDetails() {
       if (e.responseKind === 'regenerated') pairs.push(['Kind', 'Regenerated response']);
       if (!req) {
         note = e.requestMessageId
-          ? 'The message that requested this response was not recorded (it was sent before tracking, in another browser, or could not be timed), so no interval is drawn.'
+          ? 'The message that requested this response is not part of the loaded data, so no interval is drawn.'
           : 'This response could not be associated with a user message.';
       }
     }
@@ -291,7 +298,7 @@ function renderDetails() {
   el.innerHTML = `${convHeader(row)}
     ${dl([
       ['Conversation id', `<code>${esc(row.id)}</code>`],
-      ['First observed', c.firstObservedAt ? esc(formatInstant(c.firstObservedAt, { locale: LOCALE })) : '—'],
+      ['Created', c.firstObservedAt ? esc(formatInstant(c.firstObservedAt, { locale: LOCALE })) : '—'],
       ['Last activity', row.lastActivityAt ? esc(formatInstant(row.lastActivityAt, { locale: LOCALE })) : '—'],
       ['Messages sent', String(row.events.filter((e) => e.type === EventType.USER_MESSAGE).length)],
       ['Completed responses', String(completed.length)],
@@ -311,7 +318,7 @@ function renderDetails() {
 
 async function deleteConversation(id) {
   const row = state.rowById.get(id);
-  const ok = confirm(`Delete all recorded activity for "${row ? row.title : id}"?\n\nThis removes ${row ? row.events.length : 'its'} events from this browser. It does not affect the conversation in ChatGPT. This cannot be undone.`);
+  const ok = confirm(`Delete the loaded activity for "${row ? row.title : id}"?\n\nThis removes ${row ? row.events.length : 'its'} events from this browser. It does not affect the conversation in ChatGPT. This cannot be undone.`);
   if (!ok) return;
   await state.db.deleteConversation(id);
   if (state.selection?.rowId === id) state.selection = null;
@@ -332,7 +339,7 @@ async function exportJson() {
 
 async function clearAll() {
   const stats = await state.db.stats();
-  if (!confirm(`Delete ALL recorded activity?\n\n${stats.conversations} conversations and ${stats.events} events will be removed from this browser. Consider exporting first. This cannot be undone.`)) return;
+  if (!confirm(`Delete ALL loaded activity?\n\n${stats.conversations} conversations and ${stats.events} events will be removed from this browser. Consider exporting first. This cannot be undone.`)) return;
   if (!confirm('Are you sure? This permanently deletes the activity history.')) return;
   await state.db.clearAll();
   state.selection = null;
@@ -342,6 +349,12 @@ async function clearAll() {
 async function renderDataDialog() {
   const stats = await state.db.stats();
   $('#stats').innerHTML = `<div><b>${stats.conversations}</b>conversations</div><div><b>${stats.events}</b>events</div><div><b>${stats.lastEventAt ? esc(time(stats.lastEventAt)) : '—'}</b>last event</div><div><b>v${state.db.db.version}</b>schema</div>`;
+  const last = await state.db.getSetting('lastLoad', null);
+  $('#lastLoad').textContent = last
+    ? `Last load: ${time(last.at)}, period from ${time(last.since)}. ${last.stats.listed} conversations listed, ${last.stats.fetched} read, ${last.stats.unchanged} unchanged` +
+      `${last.stats.missing + last.stats.failed ? `, ${last.stats.missing + last.stats.failed} could not be read` : ''}. ` +
+      `${last.totals.responses} responses read; ${last.totals.withUpdateTime} had a stored completion (update) time, the rest use the final message's creation time.`
+    : 'Nothing loaded yet.';
   const rows = [...state.rows].sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0));
   $('#convTable tbody').innerHTML = rows.map((r) => `<tr>
       <td>${esc(r.title)}</td><td><code>${esc(shortId(r.id))}</code></td><td>${r.events.length}</td>
@@ -496,16 +509,68 @@ function bind() {
     else if (e.key === 'Escape') select(null);
   });
 
-  // Refresh when the service worker stores new events.
-  let pending = 0;
-  chrome.runtime.onMessage.addListener((m) => {
-    if (m && m.type === Msg.DB_CHANGED) {
-      clearTimeout(pending);
-      pending = setTimeout(reload, 250);
-    }
-  });
+  $('#loadRange').value = String(state.loadDays);
+  $('#loadRange').addEventListener('change', (e) => { state.loadDays = Number(e.target.value); savePrefs(); });
+  $('#loadBtn').addEventListener('click', () => loadFromChatGPT());
+  $('#cancelBtn').addEventListener('click', () => state.loading?.abort());
   // Keep the "now" line current.
   setInterval(() => renderAxis(), 30000);
+}
+
+// ---- loading from ChatGPT ------------------------------------------------
+
+function setLoadStatus(text, kind = '') {
+  const el = $('#loadStatus');
+  el.textContent = text;
+  el.className = `load-status ${kind}`;
+}
+
+async function loadFromChatGPT() {
+  if (state.loading) return;
+  const ctrl = new AbortController();
+  state.loading = ctrl;
+  $('#loadBtn').disabled = true;
+  $('#cancelBtn').hidden = false;
+  const since = Date.now() - state.loadDays * DAY;
+  const totals = { conversations: 0, responses: 0, withUpdateTime: 0, inProgress: 0 };
+  let lastRefresh = 0;
+  setLoadStatus('Connecting to chatgpt.com…');
+  try {
+    const known = await state.db.knownUpdateTimes();
+    const stats = await loadHistory({
+      since,
+      known,
+      signal: ctrl.signal,
+      onProgress: (p) => {
+        if (p.phase === 'connect') setLoadStatus(p.message);
+        else if (p.phase === 'list') setLoadStatus(`Listing conversations… ${p.listed}`);
+        else if (p.phase === 'details') setLoadStatus(`Reading conversations ${p.done}/${p.total}${p.unchanged ? ` (${p.unchanged} unchanged)` : ''}…`);
+      },
+      onConversation: async (conv) => {
+        const { conversation, events, stats: s } = convertConversation(conv);
+        await state.db.replaceConversation(conversation, events);
+        totals.conversations++;
+        totals.responses += s.responses;
+        totals.withUpdateTime += s.withUpdateTime;
+        totals.inProgress += s.inProgress;
+        if (Date.now() - lastRefresh > 1000) {
+          lastRefresh = Date.now();
+          await reload();
+        }
+      },
+    });
+    await state.db.setSetting('lastLoad', { at: Date.now(), since, days: state.loadDays, stats, totals });
+    await reload();
+    setWindow(windowFor(RANGE_VIEW[state.loadDays] || 'week', Date.now()));
+    setLoadStatus(`Loaded ${stats.listed} conversations from the last ${state.loadDays === 1 ? '24 hours' : `${state.loadDays} days`} (${stats.fetched} read, ${stats.unchanged} unchanged${stats.missing + stats.failed ? `, ${stats.missing + stats.failed} could not be read` : ''}).`, 'ok');
+  } catch (err) {
+    setLoadStatus(err.code === 'aborted' ? 'Cancelled. Conversations read so far are kept.' : err.message || String(err), err.code === 'aborted' ? '' : 'error');
+    await reload();
+  } finally {
+    state.loading = null;
+    $('#loadBtn').disabled = false;
+    $('#cancelBtn').hidden = true;
+  }
 }
 
 async function init() {
@@ -514,7 +579,7 @@ async function init() {
   bind();
   await reload();
   // Expose for debugging and end-to-end tests.
-  window.__timeline = { state, reload, PROVISIONAL_PREFIX };
+  window.__timeline = { state, reload, loadFromChatGPT, PROVISIONAL_PREFIX };
 }
 
 init().catch((err) => {

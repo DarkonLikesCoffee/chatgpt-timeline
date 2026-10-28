@@ -1,25 +1,16 @@
 {
   "manifest_version": 3,
   "name": "ChatGPT Activity Timeline",
-  "version": "0.2.0",
-  "description": "Records when you send ChatGPT messages and when responses complete, and shows them on a local, per-conversation timeline.",
+  "version": "0.3.0",
+  "description": "Reads your ChatGPT conversation history for a period you choose and shows when you sent messages and when responses finished, on a local timeline.",
   "minimum_chrome_version": "116",
-  "background": {
-    "service_worker": "src/background/service-worker.js",
-    "type": "module"
-  },
+  "host_permissions": ["https://chatgpt.com/*"],
   "content_scripts": [
     {
-      "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"],
-      "js": ["src/content/loader.js"],
+      "matches": ["https://chatgpt.com/*"],
+      "js": ["src/content/history.js"],
       "run_at": "document_idle",
       "all_frames": false
-    }
-  ],
-  "web_accessible_resources": [
-    {
-      "resources": ["src/content/*.js", "src/shared/*.js"],
-      "matches": ["https://chatgpt.com/*", "https://chat.openai.com/*"]
     }
   ],
   "action": {

@@ -15,9 +15,9 @@ const responseTypes = new Set(RESPONSE_TYPES);
 // Returns { markers, intervals, unpaired, pending }:
 //   markers   - every event, { event, t, type }
 //   intervals - { id, start, end, status, attempt, regenerated, request, response, lane }
-//               one per response whose initiating user message was recorded
-//   unpaired  - response events whose request was not recorded (no interval)
-//   pending   - user messages with no recorded response outcome
+//               one per response whose initiating user message is present
+//   unpaired  - response events whose request is missing (no interval)
+//   pending   - user messages with no response outcome
 export function pairEvents(events) {
   const sorted = [...events].sort((a, b) => a.timestamp - b.timestamp || a.id.localeCompare(b.id));
   const users = new Map();
