@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ChatGPT Activity Timeline",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Records when you send ChatGPT messages and when responses complete, and shows them on a local, per-conversation timeline.",
   "minimum_chrome_version": "116",
   "background": {

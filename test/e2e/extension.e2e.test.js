@@ -19,7 +19,11 @@ try {
 }
 
 const EXT = resolve(fileURLToPath(new URL('../../', import.meta.url)));
-const mockScript = readFileSync(new URL('../fixtures/mock-chatgpt.js', import.meta.url), 'utf8');
+const MOCKS = {
+  legacy: readFileSync(new URL('../fixtures/mock-chatgpt.js', import.meta.url), 'utf8'),
+  '2026': readFileSync(new URL('../fixtures/mock-chatgpt-2026.js', import.meta.url), 'utf8'),
+};
+let currentMock = 'legacy';
 const NONCE = 'e2eNonce123';
 const CONV_A = '68f00000-aaaa-4000-8000-00000000000a';
 const CONV_B = '68f00000-bbbb-4000-8000-00000000000b';
@@ -27,7 +31,7 @@ const CONV_B = '68f00000-bbbb-4000-8000-00000000000b';
 function pageHtml() {
   return `<!doctype html><html><head><meta charset="utf-8"><title>ChatGPT</title></head><body>
 <script nonce="${NONCE}">window.MOCK_CONFIG = { assignIdMs: 150, firstTokenMs: 120, tokenMs: 60, tokens: 6 };</script>
-<script nonce="${NONCE}">${mockScript}</script></body></html>`;
+<script nonce="${NONCE}">${MOCKS[currentMock]}</script></body></html>`;
 }
 
 async function launch(userDataDir) {
@@ -65,7 +69,7 @@ async function sendMessage(page, text, opts = {}) {
     window.mockChat.type(t);
     window.__done = new Promise((r) => window.addEventListener('mock:done', r, { once: true }));
   }, [text, opts]);
-  await page.click('#composer-submit-button');
+  await page.click(await page.evaluate(() => window.mockChat.primarySelector));
   await page.evaluate(() => window.__done);
   await page.waitForTimeout(1200); // confirmation + delivery
 }
@@ -263,5 +267,42 @@ describe('extension in Chromium', { skip: !chromium && 'playwright not available
     await dash.waitForSelector('#empty:not([hidden])');
     assert.match(await dash.locator('#empty').innerText(), /No activity recorded yet/);
     await dash.close();
+  });
+
+  test('2026-10 layout: new chat, Enter and click sends, localized stop', async () => {
+    currentMock = '2026';
+    try {
+      const page = await openChat(ctx, '/');
+      await sendMessage(page, 'hola');
+      await page.evaluate(() => {
+        window.mockChat.type('segundo');
+        window.__done = new Promise((r) => window.addEventListener('mock:done', r, { once: true }));
+      });
+      await page.press('.ProseMirror', 'Enter');
+      await page.evaluate(() => window.__done);
+      await page.waitForTimeout(1200);
+      await page.evaluate(() => {
+        window.__nextSendOptions = { tokens: 200 };
+        window.mockChat.type('para');
+        window.__done = new Promise((r) => window.addEventListener('mock:done', r, { once: true }));
+      });
+      await page.click('.size-token-button-composer');
+      await page.waitForSelector('[aria-label="Detener"]');
+      await page.waitForTimeout(300);
+      await page.click('[aria-label="Detener"]');
+      await page.evaluate(() => window.__done);
+      await page.waitForTimeout(1200);
+      const cid = new URL(page.url()).pathname.split('/c/')[1];
+      const dash = await openDashboard(ctx, extId);
+      const events = (await storedEvents(dash)).filter((e) => e.conversationId === cid);
+      assert.deepEqual(events.map((e) => e.type), [
+        'USER_MESSAGE', 'ASSISTANT_RESPONSE_COMPLETED', 'USER_MESSAGE', 'ASSISTANT_RESPONSE_COMPLETED', 'USER_MESSAGE', 'ASSISTANT_RESPONSE_INTERRUPTED',
+      ]);
+      assert.ok(events.filter((e) => e.type === 'USER_MESSAGE').every((e) => e.timestampSource === 'submit-intent'));
+      await dash.waitForSelector(`.row[data-row="${cid}"] .iv.completed`);
+      await Promise.all([page.close(), dash.close()]);
+    } finally {
+      currentMock = 'legacy';
+    }
   });
 });

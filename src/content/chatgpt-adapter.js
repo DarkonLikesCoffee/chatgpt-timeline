@@ -36,6 +36,16 @@ export const SELECTORS = Object.freeze({
   ],
   // Error notices shown instead of, or inside, a response.
   error: ['.text-token-text-error', '[data-testid="message-error"]', '[data-testid="conversation-error"]'],
+  // 2026 layout: each turn holds a user unit and an assistant unit.
+  unit: ['[data-chatgpt-search-unit-key]', '[data-content-search-unit-key]'],
+  turnKey: ['[data-turn-key]', '[data-content-search-turn-key]'],
+  turnState: 'data-talvt-turn-state',
+  assistantId: ['[data-chatgpt-selection-message-id]', '[data-dil-message-id]'],
+  // The main conversation (excludes the floating "quick chat" window).
+  thread: ['[data-thread-find-target="conversation"]', 'main'],
+  composerRoot: ['[data-chatgpt-composer]', '[data-testid="composer"]'],
+  // The composer's primary action button (send / stop / voice), any language.
+  primaryButton: ['button.size-token-button-composer', '#composer-submit-button', '[data-testid="send-button"]', '[data-testid="stop-button"]'],
   composer: ['#prompt-textarea', 'form [contenteditable="true"]', '[contenteditable="true"][role="textbox"]', '.ProseMirror[contenteditable="true"]', 'form textarea'],
 });
 
@@ -60,8 +70,36 @@ function matchesAny(el, selectors) {
   return selectors.some((sel) => el.matches?.(sel));
 }
 
+// Accessible names of ChatGPT's stop control in common UI languages.
+export const STOP_LABEL = /^(stop|detener|parar|interromper|arr[êe]ter|stopp|anhalten|interrompi|ferma|zatrzymaj|stoppa|stoppen|остановить|зупинити|停止|中止|중지|durdur|hentikan|berhenti|dừng|หยุด|עצור|إيقاف|रोकें)/i;
+
+const SEND_LABEL = /^(send|submit|save|enviar|guardar|envoyer|enregistrer|senden|speichern|invia|salva|wyślij|zapisz|отправить|сохранить|发送|保存|送信|보내기|저장|gönder|kaydet|kirim|simpan|gửi|lưu)$/i;
+
+function threadRoot(doc) {
+  return query(doc, SELECTORS.thread) || doc;
+}
+
+export function composerRoot(doc) {
+  const root = query(doc, SELECTORS.composerRoot);
+  if (root) return root;
+  const composer = query(doc, SELECTORS.composer);
+  return composer ? composer.closest('form') || composer.parentElement : null;
+}
+
+function primaryButtons(doc) {
+  const root = composerRoot(doc);
+  if (!root) return [];
+  const primary = root.querySelectorAll(SELECTORS.primaryButton.join(', '));
+  return primary.length ? [...primary] : [...root.querySelectorAll('button')];
+}
+
+export function isStopButton(button) {
+  return SELECTORS.stop.some((s) => button.matches(s)) || STOP_LABEL.test((button.getAttribute('aria-label') || '').trim());
+}
+
 export function isGenerating(doc) {
-  return query(doc, SELECTORS.stop) != null;
+  if (query(doc, SELECTORS.stop) != null) return true;
+  return primaryButtons(doc).some(isStopButton);
 }
 
 function turnContainer(el) {
@@ -82,6 +120,68 @@ function idOf(el, container) {
   );
 }
 
+function firstToken(v) {
+  return (v || '').split(/[\s,]+/).find(Boolean) || null;
+}
+
+function unitRole(u) {
+  const key = u.getAttribute('data-chatgpt-search-unit-key') || u.getAttribute('data-content-search-unit-key') || '';
+  const m = /:(user|assistant)$/.exec(key);
+  if (m) return m[1];
+  return u.querySelector('[data-conversation-role]')?.getAttribute('data-conversation-role') || null;
+}
+
+const DONE_STATES = /^(complete|completed|done|finished|idle|static|error|failed)$/i;
+
+// 2026 layout. Returns null when the page does not use it.
+function readUnitTurns(root) {
+  let units = [];
+  for (const sel of SELECTORS.unit) {
+    units = [...root.querySelectorAll(sel)];
+    if (units.length) break;
+  }
+  if (!units.length) return null;
+  const unitSel = SELECTORS.unit.join(', ');
+  const turns = [];
+  let current = null;
+  for (const u of units) {
+    if (u.parentElement && u.parentElement.closest(unitSel) && root.contains(u.parentElement.closest(unitSel))) continue; // nested
+    const role = unitRole(u);
+    if (role !== 'user' && role !== 'assistant') continue;
+    const turnEl = SELECTORS.turnKey.map((sel) => u.closest(sel)).find(Boolean) || u.parentElement;
+    const turnKey = turnEl.getAttribute('data-turn-key') || turnEl.getAttribute('data-content-search-turn-key') || null;
+    const stateEl = u.closest(`[${SELECTORS.turnState}]`) || turnEl.querySelector(`[${SELECTORS.turnState}]`);
+    const state = stateEl ? stateEl.getAttribute(SELECTORS.turnState) : null;
+    const length = role === 'assistant' ? (u.textContent || '').length : 0;
+    if (current && current.role === 'assistant' && role === 'assistant' && current.turnEl === turnEl) {
+      current.length += length; // several assistant units (e.g. tool calls) form one response
+      continue;
+    }
+    let id;
+    if (role === 'user') {
+      id = firstToken(u.getAttribute('data-chatgpt-search-message-ids')) || turnKey;
+    } else {
+      const idEl = query(u, SELECTORS.assistantId);
+      id =
+        (idEl && (idEl.getAttribute('data-chatgpt-selection-message-id') || idEl.getAttribute('data-dil-message-id'))) ||
+        firstToken(u.getAttribute('data-chatgpt-search-message-ids')) ||
+        (turnKey ? `${turnKey}:assistant` : null);
+    }
+    current = { role, id, length, turnEl, element: u, state };
+    turns.push(current);
+  }
+  return turns.map(({ role, id, length, element, state }) => {
+    const turn = { role, id, element };
+    if (role === 'assistant') {
+      turn.length = length;
+      turn.streaming = (state != null && !DONE_STATES.test(state)) || query(element, SELECTORS.streaming) != null;
+      turn.error = (state != null && /error|fail/i.test(state)) || query(element, SELECTORS.error) != null;
+      if (state != null) turn.state = state;
+    }
+    return turn;
+  });
+}
+
 function messageElements(doc) {
   const marked = doc.querySelectorAll(SELECTORS.message);
   if (marked.length) return [...marked].map((el) => ({ el, role: el.getAttribute('data-message-author-role') }));
@@ -89,6 +189,13 @@ function messageElements(doc) {
 }
 
 export function readTurns(doc) {
+  const root = threadRoot(doc);
+  const unitTurns = readUnitTurns(root);
+  if (unitTurns) return unitTurns;
+  return readMessageTurns(root);
+}
+
+function readMessageTurns(doc) {
   const turns = [];
   let current = null;
   for (const { el, role } of messageElements(doc)) {
@@ -182,11 +289,18 @@ export function classifyIntent(event) {
   if (event.type === 'click') {
     const button = target.closest('button, [role="button"]');
     if (!button) return null;
-    if (SELECTORS.stop.some((s) => button.matches(s))) return 'stop';
-    if (SELECTORS.send.some((s) => button.matches(s))) return 'submit';
+    if (isStopButton(button)) return 'stop';
+    if (SELECTORS.send.slice(0, 4).some((s) => button.matches(s))) return 'submit';
+    // The composer's primary button is "send" only when there is text to send
+    // (when empty, the same slot starts voice mode).
+    const root = button.closest(SELECTORS.composerRoot.join(', ')) || button.closest('form');
+    if (root && (button.matches(SELECTORS.primaryButton.join(', ')) || button.matches('button[type="submit"]'))) {
+      const editor = query(root, SELECTORS.composer);
+      return editor && hasText(editor) ? 'submit' : null;
+    }
     // The "Send" button of an inline message edit.
-    const inTurn = button.closest('[data-message-author-role="user"], [data-testid^="conversation-turn-"], [data-turn], article');
-    if (inTurn && inTurn.querySelector('textarea, [contenteditable="true"]') && /^(send|submit|save)$/i.test((button.textContent || '').trim())) {
+    const inTurn = button.closest('[data-message-author-role="user"], [data-testid^="conversation-turn-"], [data-turn], [data-turn-key], article');
+    if (inTurn && inTurn.querySelector('textarea, [contenteditable="true"]') && SEND_LABEL.test((button.textContent || button.getAttribute('aria-label') || '').trim())) {
       return 'submit';
     }
   }

@@ -85,6 +85,69 @@ describe('snapshot', () => {
   });
 });
 
+describe('chatgpt.com layout observed 2026-10 (turn units, localized controls)', () => {
+  const html = readFileSync(new URL('../fixtures/chatgpt-2026-10.html', import.meta.url), 'utf8');
+  const load26 = () => new JSDOM(html, { url: `https://chatgpt.com/c/${CID}` }).window;
+
+  test('reads user and assistant turns with their ids, ignoring the floating chat', () => {
+    const w = load26();
+    const s = readSnapshot(w.document, w.location, 1);
+    assert.deepEqual(s.turns.map((t) => [t.role, t.id]), [
+      ['user', 'aaaa0001-0000-4000-8000-000000000000'],
+      ['assistant', '11111111-0000-4000-8000-000000000000'],
+      ['user', 'aaaa0002-0000-4000-8000-000000000002'],
+      ['assistant', 'bbbb0002-0000-4000-8000-000000000003'],
+    ]);
+    assert.equal(s.turns[1].streaming, false, 'state complete');
+    assert.equal(s.turns[3].streaming, true, 'state not complete');
+    assert.ok(s.turns[3].length > 0);
+  });
+
+  test('the localized stop button ("Detener") means generating; "Iniciar Voz" does not', () => {
+    const w = load26();
+    assert.equal(readSnapshot(w.document, w.location, 1).generating, true);
+    const b = w.document.querySelector('.size-token-button-composer');
+    b.setAttribute('aria-label', 'Iniciar Voz');
+    assert.equal(readSnapshot(w.document, w.location, 1).generating, false);
+    // "Detener dictado"-style buttons outside the primary slot are ignored.
+    w.document.querySelector('[aria-label="Dictar"]').setAttribute('aria-label', 'Detener dictado');
+    assert.equal(readSnapshot(w.document, w.location, 1).generating, false);
+  });
+
+  test('an assistant unit without a message id yet uses a turn-based placeholder id', () => {
+    const w = load26();
+    w.document.querySelector('[data-chatgpt-selection-message-id="bbbb0002-0000-4000-8000-000000000003"]').removeAttribute('data-chatgpt-selection-message-id');
+    const s = readSnapshot(w.document, w.location, 1);
+    assert.equal(s.turns[3].id, 'aaaa0002-0000-4000-8000-000000000002:assistant');
+  });
+
+  test('a turn whose state is an error is a failed response', () => {
+    const w = load26();
+    w.document.querySelectorAll('[data-talvt-turn-state]')[1].setAttribute('data-talvt-turn-state', 'error');
+    const s = readSnapshot(w.document, w.location, 1);
+    assert.equal(s.turns[3].error, true);
+    assert.equal(s.turns[3].streaming, false);
+  });
+
+  test('send and stop clicks on the localized primary button', () => {
+    const w = load26();
+    const d = w.document;
+    const click = (target) => {
+      const e = new w.MouseEvent('click', { bubbles: true });
+      Object.defineProperty(e, 'target', { value: target });
+      return classifyIntent(e);
+    };
+    const primary = d.querySelector('.size-token-button-composer');
+    assert.equal(click(primary.querySelector('path')), 'stop');
+    primary.setAttribute('aria-label', 'Enviar mensaje');
+    assert.equal(click(primary), 'submit', 'composer has text');
+    d.querySelector('.ProseMirror').innerHTML = '<p></p>';
+    primary.setAttribute('aria-label', 'Iniciar Voz');
+    assert.equal(click(primary), null, 'empty composer: voice, not send');
+    assert.equal(click(d.querySelector('[aria-label="Copiar"]')), null);
+  });
+});
+
 describe('markup variants', () => {
   const page = (body) => new JSDOM(`<!doctype html><body><main>${body}</main></body>`, { url: `https://chatgpt.com/c/${CID}` }).window;
 

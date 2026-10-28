@@ -13,7 +13,20 @@ import { TimelineDB } from '../../src/shared/db.js';
 import { EventType } from '../../src/shared/constants.js';
 import { buildRows } from '../../src/timeline/model.js';
 
-const mockScript = readFileSync(new URL('../fixtures/mock-chatgpt.js', import.meta.url), 'utf8');
+const LAYOUTS = [
+  {
+    name: 'legacy layout (data-message-author-role, data-testid controls)',
+    script: readFileSync(new URL('../fixtures/mock-chatgpt.js', import.meta.url), 'utf8'),
+    unitMarker: 'data-message-author-role=user',
+    stopMarker: 'stop-button',
+  },
+  {
+    name: '2026-10 layout (turn units, localized controls)',
+    script: readFileSync(new URL('../fixtures/mock-chatgpt-2026.js', import.meta.url), 'utf8'),
+    unitMarker: 'data-chatgpt-search-unit-key=fallback-turn-0:0:user',
+    stopMarker: 'aria-label="Detener"',
+  },
+];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function backend(factory = new IDBFactory()) {
@@ -27,31 +40,35 @@ function backend(factory = new IDBFactory()) {
   };
 }
 
-function tab(be, path = '/') {
+function makeTab(be, path = '/', layout = LAYOUTS[0], mockConfig = {}) {
   const dom = new JSDOM('<!doctype html><html><head><title>ChatGPT</title></head><body></body></html>', {
     url: `https://chatgpt.com${path}`,
     runScripts: 'outside-only',
     pretendToBeVisual: true,
   });
   const w = dom.window;
-  w.MOCK_CONFIG = { assignIdMs: 60, firstTokenMs: 40, tokenMs: 15, tokens: 5 };
-  w.eval(mockScript);
+  w.MOCK_CONFIG = { assignIdMs: 60, firstTokenMs: 40, tokenMs: 15, tokens: 5, ...mockConfig };
+  w.eval(layout.script);
+  const primary = () => w.document.querySelector(w.mockChat.primarySelector);
   const rt = createRuntime({ doc: w.document, win: w, sendMessage: be.sendMessage, options: { CONFIRM_MS: 80 } });
   rt.start();
   const api = {
     w,
     rt,
+    clickPrimary() {
+      primary().dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+    },
     async send(text = 'hello', opts) {
       w.__nextSendOptions = opts;
       w.mockChat.type(text);
       const done = new Promise((r) => w.addEventListener('mock:done', r, { once: true }));
-      w.document.getElementById('composer-submit-button').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+      primary().dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
       return done;
     },
     async pressEnter(text = 'hello') {
       w.mockChat.type(text);
       const done = new Promise((r) => w.addEventListener('mock:done', r, { once: true }));
-      w.document.getElementById('prompt-textarea').dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      w.document.querySelector('#prompt-textarea, .ProseMirror').dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
       return done;
     },
     async settle() {
@@ -67,7 +84,9 @@ async function allEvents(be) {
   return (await (await be.db()).listEvents()).sort((a, b) => a.timestamp - b.timestamp);
 }
 
-describe('content script on a simulated ChatGPT page', () => {
+for (const layout of LAYOUTS) describe(`content script on a simulated ChatGPT page: ${layout.name}`, () => {
+  const tab = (be, path, cfg) => makeTab(be, path, layout, cfg);
+
   test('records a new chat end-to-end, rebinds to the assigned URL id, no duplicates', async () => {
     const be = backend();
     const t = tab(be);
@@ -105,9 +124,11 @@ describe('content script on a simulated ChatGPT page', () => {
     const d = t.rt.diagnostics();
     const cap = d.afterLastSend;
     assert.ok(cap.buttons.length >= 2);
-    assert.ok(cap.added.some((a) => a.outline.some((l) => l.includes('data-message-author-role=user'))));
-    assert.ok(cap.added.some((a) => a.outline.some((l) => l.includes('data-message-author-role=assistant'))));
-    assert.ok(cap.attributeChanges.some((c) => c.attr === 'data-testid' && c.element.includes('stop-button')));
+    assert.ok(cap.added.some((a) => a.outline.some((l) => l.includes(layout.unitMarker))));
+    assert.ok(
+      cap.buttons.some((b) => b.buttons.some((x) => x.includes(layout.stopMarker))) ||
+        cap.attributeChanges.some((c) => (c.element || '').includes(layout.stopMarker)),
+    );
     const json = JSON.stringify(d);
     for (const text of ['very private', 'token1']) assert.ok(!json.includes(text), text);
   });
@@ -118,9 +139,9 @@ describe('content script on a simulated ChatGPT page', () => {
     await t.send('fail please', { fail: true });
     await t.settle();
     t.w.mockChat.type('long answer');
-    t.w.document.getElementById('composer-submit-button').dispatchEvent(new t.w.MouseEvent('click', { bubbles: true }));
+    t.clickPrimary();
     await sleep(90);
-    t.w.document.getElementById('composer-submit-button').dispatchEvent(new t.w.MouseEvent('click', { bubbles: true })); // stop
+    t.clickPrimary(); // stop
     await t.settle();
     const types = (await allEvents(be)).map((e) => e.type);
     assert.deepEqual(types, [EventType.USER_MESSAGE, EventType.ASSISTANT_RESPONSE_FAILED, EventType.USER_MESSAGE, EventType.ASSISTANT_RESPONSE_INTERRUPTED]);
@@ -210,5 +231,36 @@ describe('content script on a simulated ChatGPT page', () => {
     const rows = buildRows(await (await be2.db()).listConversations(), evs);
     assert.equal(rows[0].intervals.length, 2);
     be2.restart();
+  });
+});
+
+describe('2026-10 layout specifics', () => {
+  const layout = LAYOUTS[1];
+
+  test('the response id appearing mid-stream yields one response with the real id', async (ctx) => {
+    const be = backend();
+    const t = makeTab(be, '/c/bbbbbbbb-0000-0000-0000-000000000026', layout, { assistantIdAfterTokens: 3, tokens: 8 });
+    ctx.after(() => t.close());
+    await t.send('hola');
+    await t.settle();
+    const events = await allEvents(be);
+    assert.deepEqual(events.map((e) => e.type), [EventType.USER_MESSAGE, EventType.ASSISTANT_RESPONSE_COMPLETED]);
+    assert.ok(!events[1].messageId.endsWith(':assistant'), `real id, got ${events[1].messageId}`);
+    assert.equal(events[1].requestMessageId, events[0].messageId);
+    assert.equal(events[1].responseKind, 'initial');
+  });
+
+  test('works from the localized stop button alone if the turn state never shows streaming', async (ctx) => {
+    const be = backend();
+    const t = makeTab(be, '/c/bbbbbbbb-0000-0000-0000-000000000027', layout, { streamingState: 'complete', tokens: 10, tokenMs: 30 });
+    ctx.after(() => t.close());
+    const sentAt = Date.now();
+    await t.send('hola');
+    const doneAt = Date.now();
+    await t.settle();
+    const events = await allEvents(be);
+    assert.deepEqual(events.map((e) => e.type), [EventType.USER_MESSAGE, EventType.ASSISTANT_RESPONSE_COMPLETED]);
+    // Completion is at the end of generation, not when the response first appeared.
+    assert.ok(events[1].timestamp >= doneAt - 100, `${events[1].timestamp - sentAt} ms after send`);
   });
 });

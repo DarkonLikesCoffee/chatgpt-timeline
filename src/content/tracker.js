@@ -198,7 +198,11 @@ export class ConversationTracker {
     // Only the last rendered user turn can be a live submission.
     const last = userTurns[userTurns.length - 1];
     if (last && fresh.includes(last)) {
-      const replaced = this.prevUserOrder[userTurns.length - 1];
+      const pos = userTurns.length - 1;
+      // Same position with the same predecessor: guards against positions
+      // shifting when a virtualized thread unmounts off-screen turns.
+      const samePlace = (userTurns[pos - 1]?.id ?? null) === (this.prevUserOrder[pos - 1] ?? null);
+      const replaced = samePlace ? this.prevUserOrder[pos] : null;
       const intent = this.takeSubmitIntent(at);
       if (intent != null) {
         this.recordUser(last, userTurns, intent, TimestampSource.SUBMIT_INTENT);
@@ -242,7 +246,8 @@ export class ConversationTracker {
     // that is no longer rendered.
     const pos = userTurns.indexOf(turn);
     const before = this.prevUserOrder[pos];
-    const revisionOf = before && before !== turn.id && !userTurns.some((t) => t.id === before) ? before : null;
+    const samePlace = (userTurns[pos - 1]?.id ?? null) === (this.prevUserOrder[pos - 1] ?? null);
+    const revisionOf = samePlace && before && before !== turn.id && !userTurns.some((t) => t.id === before) ? before : null;
     this.emitEvent({
       id: `user:${turn.id}`,
       type: EventType.USER_MESSAGE,
@@ -266,20 +271,31 @@ export class ConversationTracker {
         const requestMessageId = prev && prev.role === 'user' ? this.resolve(prev.id) : null;
         const siblings = requestMessageId ? this.responsesByRequest.get(requestMessageId) || new Set() : new Set();
         const previousResponseId = [...siblings].pop() || null;
-        r = {
-          requestMessageId,
-          association: requestMessageId ? Association.DOM_ADJACENT : Association.NONE,
-          // A new response under a request that already had one rendered.
-          kind: previousResponseId ? ResponseKind.REGENERATED : ResponseKind.INITIAL,
-          previousResponseId,
-          startedAt: at,
-          live: (requestMessageId != null && this.liveUserIds.has(requestMessageId) && !previousResponseId) || inProgress,
-          candidateAt: null,
-          lastLength: turn.length ?? null,
-          final: false,
-        };
-        this.responses.set(turn.id, r);
-        if (requestMessageId) this.responsesByRequest.set(requestMessageId, siblings.add(turn.id));
+        const before = previousResponseId ? this.responses.get(previousResponseId) : null;
+        if (before && before.live && !before.final && !turns.some((t) => t.id === previousResponseId)) {
+          // The in-progress response was re-rendered under a new id (e.g. a
+          // placeholder id replaced by the real one): same response.
+          this.responses.delete(previousResponseId);
+          siblings.delete(previousResponseId);
+          this.responsesByRequest.set(requestMessageId, siblings.add(turn.id));
+          this.responses.set(turn.id, before);
+          r = before;
+        } else {
+          r = {
+            requestMessageId,
+            association: requestMessageId ? Association.DOM_ADJACENT : Association.NONE,
+            // A new response under a request that already had one rendered.
+            kind: previousResponseId ? ResponseKind.REGENERATED : ResponseKind.INITIAL,
+            previousResponseId,
+            startedAt: at,
+            live: (requestMessageId != null && this.liveUserIds.has(requestMessageId) && !previousResponseId) || inProgress,
+            candidateAt: null,
+            lastLength: turn.length ?? null,
+            final: false,
+          };
+          this.responses.set(turn.id, r);
+          if (requestMessageId) this.responsesByRequest.set(requestMessageId, siblings.add(turn.id));
+        }
       }
       const len = turn.length ?? null;
       const grew = r.lastLength != null && len != null && len !== r.lastLength;

@@ -108,6 +108,18 @@ describe('user messages', () => {
     ]);
   });
 
+  test('turns unmounted by virtualization do not make a new message look like an edit', () => {
+    const ctx = setup();
+    ctx.snap(0, [U('x1'), A('y1'), U('x2'), A('y2'), U('x3'), A('y3')]);
+    ctx.tracker.noteSubmitIntent(5000);
+    // x1 and x2 scrolled out and unmounted while the new message renders at
+    // the position x2 had.
+    ctx.snap(5030, [U('x3'), A('y3'), U('m1')], { generating: true });
+    const [e] = ctx.events();
+    assert.equal(e.messageId, 'm1');
+    assert.equal(e.revisionOf, undefined);
+  });
+
   test('sending in a long, virtualized conversation (other turns re-render too) is recorded', () => {
     const ctx = setup();
     ctx.snap(0, [U('x9'), A('y9')]);

@@ -78,9 +78,9 @@ ChatGPT has no public API for this, and the extension deliberately does **not** 
 | Question | Finding / approach |
 |---|---|
 | Conversation identity | The URL path: `/c/<id>`, `/g/<gpt-or-project>/c/<id>`. A new chat starts at `/` with no id. Events are stored under a provisional id (`tmp-…`) and moved to the real id when ChatGPT pushes `/c/<id>` (detected because the same message elements are still rendered). Titles come from the sidebar link for that id, or `document.title`. |
-| Messages | Each message element has `data-message-author-role="user|assistant"` and a stable `data-message-id`. Turns are grouped by `[data-testid^="conversation-turn-"]` (or `article`), so one response made of several messages (tool calls plus answer) counts as one response, identified by its first assistant message id. |
+| Messages | **2026 layout:** each turn element (`data-turn-key`, the user message id) holds a user unit and an assistant unit (`data-chatgpt-search-unit-key` ending in `:user` / `:assistant`). Ids come from `data-chatgpt-search-message-ids` (user) and `data-chatgpt-selection-message-id` (assistant, with a turn-based placeholder until it appears). Only the main thread (`data-thread-find-target="conversation"`) is read, so the floating quick-chat is ignored. **Original layout:** each message element has `data-message-author-role="user|assistant"` and a stable `data-message-id`. Turns are grouped by `[data-testid^="conversation-turn-"]` (or `article`), so one response made of several messages (tool calls plus answer) counts as one response, identified by its first assistant message id. |
 | Submission | Capture-phase listeners classify Enter in a non-empty composer, clicks on `[data-testid="send-button"]` / `#composer-submit-button`, and inline-edit *Send* buttons. These only provide a timestamp. An event is created only when a *new* user message id then renders as the last turn, within 20 s. |
-| Generation state | `[data-testid="stop-button"]` (and aria-label fallbacks) exists only while generating. Per-response streaming markers (`.result-streaming`, `.streaming-animation`, `[data-is-streaming="true"]`, …) are also checked, along with whether the response's text length is still changing. |
+| Generation state | `[data-testid="stop-button"]`, or the composer's primary button (`button.size-token-button-composer`) carrying a localized stop label, exists only while generating. In the 2026 layout, a turn state other than `complete` also marks the response as in progress. Per-response streaming markers (`.result-streaming`, `.streaming-animation`, `[data-is-streaming="true"]`, …) are also checked, along with whether the response's text length is still changing. |
 | Completion vs intermediate rendering | Complete only when *all* of these hold: no streaming marker, no stop control (if this is the last turn), text length unchanged, and the state persists for the hold period. A flicker of the stop control, or text still growing, restarts the check. |
 | Edits | Editing creates a new user message id at the same position (a new branch). It is recorded as a new `USER_MESSAGE` with `revisionOf` set to the replaced message id. |
 | Regeneration | A new assistant message id after the same user message, observed generating. It is recorded as another outcome with `responseKind: "regenerated"`, `previousResponseId`, and its own `startedAt`. Switching between existing alternatives with `‹ 1/2 ›` is not generation, so it records nothing. |
@@ -203,7 +203,7 @@ If any step fails, see [Troubleshooting](#troubleshooting).
 ## Troubleshooting
 
 **1. Is the tracker running on the tab?** When the extension starts on a ChatGPT tab, the page's DevTools console shows one line:
-`[ChatGPT Timeline] v0.1.2 tracking this tab. …`. Other console messages on chatgpt.com, such as `Feature is disabled`, Statsig warnings, or CSP errors from `runner.html`, come from ChatGPT itself or from other extensions and are unrelated. If the line is missing:
+`[ChatGPT Timeline] v0.2.0 tracking this tab. …`. Other console messages on chatgpt.com, such as `Feature is disabled`, Statsig warnings, or CSP errors from `runner.html`, come from ChatGPT itself or from other extensions and are unrelated. If the line is missing:
 - reload the ChatGPT tab (required after installing, updating or reloading the extension);
 - check that the extension is enabled in `chrome://extensions` and shows no errors there.
 
@@ -216,7 +216,7 @@ If any step fails, see [Troubleshooting](#troubleshooting).
 
 **3. Copy diagnostics.** If messages are not detected, send a message, wait about 10 seconds for the response, then click **Copy diagnostics** (or **Save diagnostics file**) in the popup and include it in a bug report. It contains:
 - an outline of the page's element structure: tag names, class names, `data-*`/role attributes, button labels, and text *lengths*;
-- what the page added in the 10 s after your last send, with button states at 0, 0.4, 2 and 6 s;
+- what the page added in the 10 s after your last send, with button states and turn states at 0, 0.4, 1.5, 4 and 9 s;
 - counters.
 
 It never contains message text, titles or links. With it, the selectors in `src/content/chatgpt-adapter.js` can be fixed.
@@ -226,7 +226,11 @@ It never contains message text, titles or links. With it, the selectors in `src/
 ## Known limitations
 
 - **Not verified against live chatgpt.com** (see above). ChatGPT's markup changes without notice, and any selector in `chatgpt-adapter.js` may need updating.
-- **Known incompatibility (October 2026):** a user's live chatgpt.com page (Spanish UI) had none of the message markers the adapter uses. That includes `data-message-author-role`, `data-message-id`, `conversation-turn` test ids and `#prompt-textarea`; the composer buttons also had no `data-testid`. As a result, sends were detected but no messages or responses were. Version 0.1.2 collects the structural diagnostics needed to adapt the selectors (see [Troubleshooting](#troubleshooting)). Until then, recording does not work on that page version.
+- **ChatGPT layouts.** Two layouts are supported:
+  - The original layout: `data-message-author-role` / `data-message-id`, with `data-testid` send/stop buttons.
+  - The layout seen on a user's chatgpt.com on 2026-10-28 (Spanish UI). Each turn (`data-turn-key` = your message id) holds a user unit and an assistant unit (`data-chatgpt-search-unit-key=…:user|:assistant`), with a per-turn `data-talvt-turn-state`. The composer buttons have no test ids, so the stop button is recognized by its localized label on the composer's primary button ("Stop", "Detener", "Arrêter", …).
+
+  The 2026 support is built from that user's diagnostics and tested against a simulated page with the same structure. Details not visible in those diagnostics, such as the turn state's value *while* streaming and error rendering, are handled defensively but are unconfirmed. Stop-button recognition depends on the UI language being one of the listed ones (`STOP_LABEL` in `chatgpt-adapter.js`).
 - **Only live activity is recorded.** Messages sent before installation, on other devices or browsers, from the mobile or desktop apps, or while tracking is paused do not appear. A response to such a message (for example, finishing in a tab you opened later) is stored without an interval and shown faded.
 - **Navigating away or closing the tab during generation** loses that response's completion: the page no longer shows it. The message remains, marked "no response outcome recorded". If you return while it is still generating, the completion is recorded. If you return after it finished, it is not.
 - **Background tabs:** Chrome throttles hidden tabs. The completion timestamp comes from the DOM mutation that ended generation, which stays accurate as long as ChatGPT keeps updating the DOM in the background. Saving can be delayed by throttled timers, and a completion observed but not yet confirmed is saved immediately when the page is closed or navigated away.

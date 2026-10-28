@@ -32,9 +32,19 @@ export function createRuntime({ doc = document, win = window, sendMessage, now =
     const t0 = now();
     capture = { startedAt: new Date(t0).toISOString(), buttons: [], added: [], attributeChanges: [] };
     const c = capture;
-    for (const ms of [0, 400, 2000, 6000]) {
+    for (const ms of [0, 400, 1500, 4000, 9000]) {
       win.setTimeout(() => {
-        if (capture === c) c.buttons.push({ ms, buttons: safe(() => composerButtons(doc)) });
+        if (capture === c) {
+          c.buttons.push({
+            ms,
+            buttons: safe(() => composerButtons(doc)),
+            turnStates: safe(() => [...doc.querySelectorAll('[data-talvt-turn-state]')].slice(-2).map((e) => e.getAttribute('data-talvt-turn-state'))),
+            snapshot: safe(() => {
+              const sn = readSnapshot(doc, win.location, now());
+              return { generating: sn.generating, turns: sn.turns.slice(-2).map((t) => ({ role: t.role, hasId: !!t.id, streaming: t.streaming, state: t.state, length: t.length })) };
+            }),
+          });
+        }
       }, ms);
     }
     c.t0 = t0;
@@ -59,9 +69,11 @@ export function createRuntime({ doc = document, win = window, sendMessage, now =
           if (c.added.some((a) => a.node.contains(node))) continue;
           c.added.push({ node, ms, parents: safe(() => ancestorSignatures(node, 6)) });
         }
-      } else if (r.type === 'attributes' && c.attributeChanges.length < 30) {
+      } else if (r.type === 'attributes' && c.attributeChanges.length < 60) {
         const el = r.target;
-        if (el.tagName === 'BUTTON' || r.attributeName === 'data-testid' || r.attributeName === 'aria-label') {
+        if (r.attributeName === 'data-talvt-turn-state') {
+          c.attributeChanges.push({ ms, attr: r.attributeName, value: el.getAttribute(r.attributeName) });
+        } else if (el.tagName === 'BUTTON' || r.attributeName === 'data-testid' || r.attributeName === 'aria-label') {
           c.attributeChanges.push({ ms, attr: r.attributeName, element: safe(() => signature(el)) });
         }
       }
@@ -157,7 +169,10 @@ export function createRuntime({ doc = document, win = window, sendMessage, now =
       childList: true,
       characterData: true,
       attributes: true,
-      attributeFilter: ['class', 'data-testid', 'data-message-id', 'data-turn-id', 'aria-label', 'data-is-streaming'],
+      attributeFilter: [
+        'class', 'data-testid', 'data-message-id', 'data-turn-id', 'aria-label', 'data-is-streaming',
+        'data-talvt-turn-state', 'data-chatgpt-selection-message-id', 'data-chatgpt-search-message-ids', 'data-turn-key',
+      ],
     });
     // Window capture phase: runs before any page handler can stop propagation.
     win.addEventListener('keydown', onIntent, true);

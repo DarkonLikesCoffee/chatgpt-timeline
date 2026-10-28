@@ -102,6 +102,7 @@
   });
 
   window.mockChat = {
+    primarySelector: '#composer-submit-button',
     type(text) { composer.textContent = text; },
     // Regenerate the last response: replace the assistant turn with a new one.
     regenerate() {
