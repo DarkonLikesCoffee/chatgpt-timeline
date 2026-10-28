@@ -58,7 +58,7 @@ function tab(be, path = '/') {
       await sleep(250);
       while (rt.transport.pending) await sleep(20);
     },
-    close() { rt.stop(); w.close(); },
+    close() { if (!this.closed) { this.closed = true; rt.stop(); w.close(); } },
   };
   return api;
 }
@@ -93,6 +93,23 @@ describe('content script on a simulated ChatGPT page', () => {
     assert.equal(convs[0].url, `https://chatgpt.com/c/${cid}`);
     assert.equal(convs[0].title, `Chat ${cid.slice(0, 4)}`);
     t.close();
+  });
+
+  test('diagnostics capture what the page added after a send, without text', async (ctx) => {
+    const be = backend();
+    const t = tab(be, '/c/aaaaaaaa-0000-0000-0000-0000000000d1');
+    ctx.after(() => t.close());
+    await t.send('very private words');
+    await t.settle();
+    await sleep(300); // button-state samples are taken 0, 400, 2000 and 6000 ms after the send
+    const d = t.rt.diagnostics();
+    const cap = d.afterLastSend;
+    assert.ok(cap.buttons.length >= 2);
+    assert.ok(cap.added.some((a) => a.outline.some((l) => l.includes('data-message-author-role=user'))));
+    assert.ok(cap.added.some((a) => a.outline.some((l) => l.includes('data-message-author-role=assistant'))));
+    assert.ok(cap.attributeChanges.some((c) => c.attr === 'data-testid' && c.element.includes('stop-button')));
+    const json = JSON.stringify(d);
+    for (const text of ['very private', 'token1']) assert.ok(!json.includes(text), text);
   });
 
   test('stop and failure produce non-completed outcomes', async () => {

@@ -121,10 +121,31 @@ describe('diagnostics', () => {
     assert.equal(d.snapshot.generating, true);
     assert.ok(d.composerButtons.some((b) => b.testid === 'stop-button'));
     assert.equal(d.path, '/c/<id>');
+    assert.ok(d.mainOutline.some((l) => l.includes('data-message-author-role=assistant')));
+    assert.ok(d.mainOutline.some((l) => /text:\d+/.test(l)), 'text lengths, not text');
     const json = JSON.stringify(d);
     for (const text of ['Hello there', 'How can I help', 'Partial answer', 'draft text', 'Refactoring the parser', 'Other chat', CID]) {
       assert.ok(!json.includes(text), text);
     }
+  });
+});
+
+describe('structural outline', () => {
+  test('sections, attributes and button labels without any text', () => {
+    const w = new JSDOM(`<!doctype html><body><main><div class="thread">
+      <section class="turn a b" data-foo="x1" aria-describedby="secret words here"><div><p>Private user text</p></div></section>
+      <section class="turn"><div data-kind="answer"><p>Private answer</p><p>More</p><p>More</p></div></section>
+      </div><form><div contenteditable="true" role="textbox" class="ProseMirror"><p>draft secret</p></div>
+      <button aria-label="Enviar mensaje" type="button"></button></form></main></body>`, { url: 'https://chatgpt.com/c/68f1a2b3-0000-8000-9999-000000000001' }).window;
+    const d = diagnose(w.document, w.location);
+    assert.equal(d.structure.sections, 2);
+    assert.equal(d.structure.dataAttrs['data-foo'], 1);
+    assert.equal(d.lastSections.length, 2);
+    assert.ok(d.lastSections[0].outline[0].startsWith('section.turn.a.b [data-foo=x1 aria-describedby]'));
+    assert.ok(d.lastSections[1].outline.some((l) => l.includes('×1 more like the above')));
+    assert.ok(d.composerButtons.some((b) => b.ariaLabel === 'Enviar mensaje'));
+    const json = JSON.stringify(d);
+    for (const text of ['Private', 'secret', 'More']) assert.ok(!json.includes(text), text);
   });
 });
 

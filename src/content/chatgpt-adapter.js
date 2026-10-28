@@ -36,7 +36,7 @@ export const SELECTORS = Object.freeze({
   ],
   // Error notices shown instead of, or inside, a response.
   error: ['.text-token-text-error', '[data-testid="message-error"]', '[data-testid="conversation-error"]'],
-  composer: ['#prompt-textarea', 'form [contenteditable="true"]', 'form textarea'],
+  composer: ['#prompt-textarea', 'form [contenteditable="true"]', '[contenteditable="true"][role="textbox"]', '.ProseMirror[contenteditable="true"]', 'form textarea'],
 });
 
 // Paths look like /c/<id>, /g/<gpt-or-project>/c/<id>. Anything else (/, /gpts,
@@ -284,5 +284,114 @@ export function diagnose(doc, loc) {
     lastMessageAncestors: ancestors(lastMsg, 5),
     composer: describe(composer, 1),
     composerButtons: buttons,
+    structure: census(doc),
+    // The conversation area: <main>, or the composer's closest large ancestor.
+    mainOutline: outline(doc.querySelector('main') || doc.body, { maxDepth: 16, maxLines: 450 }),
+    // Turns appear to be <section>s on some versions: the last few in full.
+    lastSections: [...doc.querySelectorAll('section')].slice(-4).map((el) => ({
+      ancestors: ancestorSignatures(el, 8),
+      outline: outline(el, { maxDepth: 14, maxLines: 150 }),
+    })),
   };
+}
+
+// ---- structural outline (troubleshooting) ---------------------------------
+// Renders an element tree as indented lines: tag, id, first class names,
+// data-* / role / type attributes (values only if they look like short
+// identifiers), names of other attributes, button aria-labels, and the
+// length of direct text. Never the text itself.
+
+const IDENT = /^[\w:./-]{1,40}$/;
+
+// Shorten id-like values (uuids, long hex) so diagnostics stay compact.
+function shortVal(v) {
+  return /[0-9a-f]{8}-[0-9a-f]{4}/i.test(v) || v.length > 32 ? `${v.slice(0, 8)}…` : v;
+}
+
+// Signature of an element and its descendants to a small depth; siblings are
+// collapsed only when their shapes are identical.
+function shape(el, depth = 2) {
+  const kids = depth > 0 ? [...el.children].slice(0, 12).map((c) => shape(c, depth - 1)).join(',') : el.children.length;
+  return `${signature(el)}{${kids}}`;
+}
+
+export function signature(el) {
+  let s = el.tagName.toLowerCase();
+  if (el.id) s += `#${shortVal(el.id)}`;
+  const cls = (el.getAttribute('class') || '').trim();
+  if (cls) s += `.${cls.split(/\s+/).slice(0, 4).map((c) => c.slice(0, 30)).join('.')}`;
+  const attrs = [];
+  for (const a of el.attributes) {
+    if (a.name === 'id' || a.name === 'class' || a.name === 'style') continue;
+    const isButton = el.tagName === 'BUTTON' || el.getAttribute('role') === 'button';
+    if (a.name.startsWith('data-') || ['role', 'type', 'contenteditable', 'dir', 'tabindex'].includes(a.name)) {
+      attrs.push(IDENT.test(a.value) ? `${a.name}=${shortVal(a.value)}` : a.name);
+    } else if (a.name === 'aria-label' && isButton) {
+      attrs.push(`aria-label="${a.value.slice(0, 40)}"`);
+    } else {
+      attrs.push(a.name);
+    }
+  }
+  if (attrs.length) s += ` [${attrs.join(' ')}]`;
+  let text = 0;
+  for (const n of el.childNodes) if (n.nodeType === 3) text += n.textContent.trim().length;
+  if (text) s += ` text:${text}`;
+  if (el.shadowRoot) s += ' #shadow';
+  return s;
+}
+
+export function outline(root, { maxDepth = 14, maxChildren = 8, maxLines = 400 } = {}) {
+  const lines = [];
+  const walk = (el, depth) => {
+    if (lines.length >= maxLines) return;
+    lines.push(`${'  '.repeat(depth)}${signature(el)}`);
+    if (depth >= maxDepth) {
+      if (el.children.length) lines.push(`${'  '.repeat(depth + 1)}… ${el.children.length} children, ${el.querySelectorAll('*').length} descendants`);
+      return;
+    }
+    const kids = [...el.children];
+    if (el.shadowRoot) kids.unshift(...el.shadowRoot.children);
+    let shown = 0;
+    for (let i = 0; i < kids.length && lines.length < maxLines; i++) {
+      // Collapse runs of identical siblings (e.g. list items, code lines).
+      let j = i;
+      const key = shape(kids[i]);
+      while (j + 1 < kids.length && shape(kids[j + 1]) === key) j++;
+      if (shown++ >= maxChildren) {
+        lines.push(`${'  '.repeat(depth + 1)}… ${kids.length - i} more children`);
+        break;
+      }
+      walk(kids[i], depth + 1);
+      if (j > i) lines.push(`${'  '.repeat(depth + 1)}… ×${j - i} more like the above`);
+      i = j;
+    }
+  };
+  if (root) walk(root, 0);
+  if (lines.length >= maxLines) lines.push('… (truncated)');
+  return lines;
+}
+
+// Census of data-* attribute names and custom element tags in the document.
+export function census(doc) {
+  const dataAttrs = {};
+  const customTags = {};
+  let shadowHosts = 0;
+  for (const el of doc.querySelectorAll('*')) {
+    for (const a of el.attributes) if (a.name.startsWith('data-')) dataAttrs[a.name] = (dataAttrs[a.name] || 0) + 1;
+    if (el.tagName.includes('-')) customTags[el.tagName.toLowerCase()] = (customTags[el.tagName.toLowerCase()] || 0) + 1;
+    if (el.shadowRoot) shadowHosts++;
+  }
+  return { dataAttrs, customTags, shadowHosts, iframes: doc.querySelectorAll('iframe').length, sections: doc.querySelectorAll('section').length };
+}
+
+export function composerButtons(doc) {
+  const composer = query(doc, SELECTORS.composer);
+  const root = composer ? composer.closest('form, [data-testid="composer"]') || composer.parentElement : null;
+  return root ? [...root.querySelectorAll('button, [role="button"]')].slice(0, 15).map(signature) : [];
+}
+
+export function ancestorSignatures(el, n) {
+  const out = [];
+  for (let p = el && el.parentElement; p && out.length < n; p = p.parentElement) out.push(signature(p));
+  return out;
 }

@@ -1,7 +1,7 @@
 // Content-script runtime: observes the ChatGPT page, feeds snapshots and
 // intents to the tracker, and forwards tracker output to the service worker.
 
-import { readSnapshot, classifyIntent, diagnose } from './chatgpt-adapter.js';
+import { readSnapshot, classifyIntent, diagnose, outline, ancestorSignatures, composerButtons, signature } from './chatgpt-adapter.js';
 import { ConversationTracker, DEFAULTS } from './tracker.js';
 import { Transport } from './transport.js';
 import { Msg } from '../shared/constants.js';
@@ -23,6 +23,57 @@ export function createRuntime({ doc = document, win = window, sendMessage, now =
     intents: { submit: 0, stop: 0, lastSubmitAt: null },
     emitted: {},
   };
+  // What the page did in the seconds after the most recent send (structure
+  // only, no text), to adapt the selectors when ChatGPT's markup changes.
+  let capture = null;
+  const CAPTURE_MS = 10000;
+
+  function startCapture() {
+    const t0 = now();
+    capture = { startedAt: new Date(t0).toISOString(), buttons: [], added: [], attributeChanges: [] };
+    const c = capture;
+    for (const ms of [0, 400, 2000, 6000]) {
+      win.setTimeout(() => {
+        if (capture === c) c.buttons.push({ ms, buttons: safe(() => composerButtons(doc)) });
+      }, ms);
+    }
+    c.t0 = t0;
+  }
+
+  function safe(fn) {
+    try {
+      return fn();
+    } catch (err) {
+      return String(err);
+    }
+  }
+
+  function recordMutations(records) {
+    const c = capture;
+    if (!c || now() - c.t0 > CAPTURE_MS) return;
+    const ms = now() - c.t0;
+    for (const r of records) {
+      if (r.type === 'childList' && c.added.length < 20) {
+        for (const node of r.addedNodes) {
+          if (node.nodeType !== 1 || c.added.length >= 20) continue;
+          if (c.added.some((a) => a.node.contains(node))) continue;
+          c.added.push({ node, ms, parents: safe(() => ancestorSignatures(node, 6)) });
+        }
+      } else if (r.type === 'attributes' && c.attributeChanges.length < 30) {
+        const el = r.target;
+        if (el.tagName === 'BUTTON' || r.attributeName === 'data-testid' || r.attributeName === 'aria-label') {
+          c.attributeChanges.push({ ms, attr: r.attributeName, element: safe(() => signature(el)) });
+        }
+      }
+    }
+  }
+
+  function captureReport() {
+    if (!capture) return null;
+    const { t0, added, ...rest } = capture;
+    // Outline added subtrees as they are now (after streaming finished).
+    return { ...rest, added: added.map(({ node, ms, parents }) => ({ ms, connected: node.isConnected, parents, outline: safe(() => outline(node, { maxDepth: 10, maxLines: 60 })) })) };
+  }
 
   const transport = new Transport({
     send: async (m) => {
@@ -65,7 +116,8 @@ export function createRuntime({ doc = document, win = window, sendMessage, now =
     timer = win.setTimeout(run, delay);
   }
 
-  function onMutations() {
+  function onMutations(records) {
+    if (capture) recordMutations(records);
     lastMutationAt = now();
     schedule(50);
   }
@@ -76,6 +128,7 @@ export function createRuntime({ doc = document, win = window, sendMessage, now =
       stats.intents.submit++;
       stats.intents.lastSubmitAt = now();
       tracker.noteSubmitIntent(now());
+      startCapture();
     } else if (kind === 'stop') {
       stats.intents.stop++;
       tracker.noteStopIntent(now());
@@ -150,6 +203,7 @@ export function createRuntime({ doc = document, win = window, sendMessage, now =
         trackedResponses: tracker.responses?.size ?? 0,
       },
       page,
+      afterLastSend: captureReport(),
     };
   }
 

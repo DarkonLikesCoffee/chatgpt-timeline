@@ -77,11 +77,20 @@ async function tabDiagnostics() {
     return;
   }
   for (const [text, cls] of summarize(d)) list.append(line(text, cls));
+  const json = JSON.stringify(d, null, 2);
   const btn = $('#copyDiag');
   btn.hidden = false;
   btn.onclick = async () => {
-    await navigator.clipboard.writeText(JSON.stringify(d, null, 2));
+    await navigator.clipboard.writeText(json);
     $('#copied').hidden = false;
+  };
+  const save = $('#saveDiag');
+  save.hidden = false;
+  save.onclick = () => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+    a.download = `chatgpt-timeline-diagnostics-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    a.click();
   };
 }
 

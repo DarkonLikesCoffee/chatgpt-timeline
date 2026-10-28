@@ -203,7 +203,7 @@ If any step fails, see [Troubleshooting](#troubleshooting).
 ## Troubleshooting
 
 **1. Is the tracker running on the tab?** When the extension starts on a ChatGPT tab, the page's DevTools console shows one line:
-`[ChatGPT Timeline] v0.1.1 tracking this tab. …`. Other console messages on chatgpt.com, such as `Feature is disabled`, Statsig warnings, or CSP errors from `runner.html`, come from ChatGPT itself or from other extensions and are unrelated. If the line is missing:
+`[ChatGPT Timeline] v0.1.2 tracking this tab. …`. Other console messages on chatgpt.com, such as `Feature is disabled`, Statsig warnings, or CSP errors from `runner.html`, come from ChatGPT itself or from other extensions and are unrelated. If the line is missing:
 - reload the ChatGPT tab (required after installing, updating or reloading the extension);
 - check that the extension is enabled in `chrome://extensions` and shows no errors there.
 
@@ -214,13 +214,19 @@ If any step fails, see [Troubleshooting](#troubleshooting).
 - whether it has recognized ChatGPT's stop button;
 - what it has recorded so far.
 
-**3. Copy diagnostics.** If messages are not detected, send a message, wait for the response, then click **Copy diagnostics** in the popup and include the result in a bug report. It contains only page structure (element counts, tag and attribute names, the composer's button labels) and counters. It contains no message text, titles or links. With it, the selectors in `src/content/chatgpt-adapter.js` can be fixed.
+**3. Copy diagnostics.** If messages are not detected, send a message, wait about 10 seconds for the response, then click **Copy diagnostics** (or **Save diagnostics file**) in the popup and include it in a bug report. It contains:
+- an outline of the page's element structure: tag names, class names, `data-*`/role attributes, button labels, and text *lengths*;
+- what the page added in the 10 s after your last send, with button states at 0, 0.4, 2 and 6 s;
+- counters.
+
+It never contains message text, titles or links. With it, the selectors in `src/content/chatgpt-adapter.js` can be fixed.
 
 **4. Verbose log.** In the ChatGPT tab's console, enable the *Verbose* level to see one `[ChatGPT Timeline]` debug line per recorded event.
 
 ## Known limitations
 
 - **Not verified against live chatgpt.com** (see above). ChatGPT's markup changes without notice, and any selector in `chatgpt-adapter.js` may need updating.
+- **Known incompatibility (October 2026):** a user's live chatgpt.com page (Spanish UI) had none of the message markers the adapter uses. That includes `data-message-author-role`, `data-message-id`, `conversation-turn` test ids and `#prompt-textarea`; the composer buttons also had no `data-testid`. As a result, sends were detected but no messages or responses were. Version 0.1.2 collects the structural diagnostics needed to adapt the selectors (see [Troubleshooting](#troubleshooting)). Until then, recording does not work on that page version.
 - **Only live activity is recorded.** Messages sent before installation, on other devices or browsers, from the mobile or desktop apps, or while tracking is paused do not appear. A response to such a message (for example, finishing in a tab you opened later) is stored without an interval and shown faded.
 - **Navigating away or closing the tab during generation** loses that response's completion: the page no longer shows it. The message remains, marked "no response outcome recorded". If you return while it is still generating, the completion is recorded. If you return after it finished, it is not.
 - **Background tabs:** Chrome throttles hidden tabs. The completion timestamp comes from the DOM mutation that ended generation, which stays accurate as long as ChatGPT keeps updating the DOM in the background. Saving can be delayed by throttled timers, and a completion observed but not yet confirmed is saved immediately when the page is closed or navigated away.
