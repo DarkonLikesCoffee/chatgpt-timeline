@@ -1,0 +1,17 @@
+{
+  "name": "chatgpt-activity-timeline",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Chrome extension (MV3) that records when you send ChatGPT messages and when responses complete, and shows them on a per-conversation timeline.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test \"test/unit/**/*.test.js\"",
+    "test:e2e": "node --test --test-concurrency=1 \"test/e2e/**/*.test.js\"",
+    "check": "node scripts/check.js",
+    "test:all": "npm run check && npm test && npm run test:e2e"
+  },
+  "devDependencies": {
+    "fake-indexeddb": "^6.2.6",
+    "jsdom": "^29.1.1"
+  }
+}

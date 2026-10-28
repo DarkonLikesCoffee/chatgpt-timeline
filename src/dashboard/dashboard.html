@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ChatGPT Activity Timeline</title>
+  <link rel="icon" href="../../icons/icon32.png">
+  <link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+  <header class="toolbar">
+    <h1>Activity timeline</h1>
+    <div class="group" role="group" aria-label="Zoom">
+      <button class="seg" data-view="hour" title="Hour view (1)">Hour</button><button class="seg" data-view="day" title="Day view (2)">Day</button><button class="seg" data-view="week" title="Week view (3)">Week</button><button class="seg" data-view="month" title="Month view (4)">Month</button>
+    </div>
+    <div class="group" role="group" aria-label="Navigate">
+      <button id="prev" title="Previous (←)" aria-label="Previous period">‹</button>
+      <button id="today" title="Go to now">Now</button>
+      <button id="next" title="Next (→)" aria-label="Next period">›</button>
+    </div>
+    <div id="range" class="range" aria-live="polite"></div>
+    <div class="spacer"></div>
+    <input id="search" type="search" placeholder="Search titles…" aria-label="Search conversations by title">
+    <label class="field">Sort
+      <select id="sort">
+        <option value="recent" title="Most recent activity first">Recent activity</option>
+        <option value="chronological" title="Oldest first activity first">Chronological</option>
+        <option value="title">Title</option>
+      </select>
+    </label>
+    <label class="field" title="Show only conversations with activity in the visible period">
+      <input id="activeOnly" type="checkbox" checked> Active in view
+    </label>
+    <details class="filter">
+      <summary>Dates</summary>
+      <div class="filter-body">
+        <p>Show conversations with activity between:</p>
+        <label>From <input id="activeFrom" type="date"></label>
+        <label>To <input id="activeTo" type="date"></label>
+        <button id="clearDates">Clear</button>
+      </div>
+    </details>
+    <button id="dataBtn" title="Inspect, export or delete stored data">Data</button>
+  </header>
+
+  <main class="layout">
+    <section class="timeline" aria-label="Timeline">
+      <div class="axis-row">
+        <div class="axis-label"><span id="rowCount"></span></div>
+        <div class="axis" id="axis"></div>
+      </div>
+      <div class="viewport" id="viewport">
+        <div class="grid" id="grid" aria-hidden="true"></div>
+        <div class="spacer-rows" id="rows"></div>
+        <div class="empty" id="empty" hidden></div>
+      </div>
+      <div class="legend">
+        <span><i class="mk user"></i> You sent a message</span>
+        <span><i class="mk done"></i> Response completed</span>
+        <span><i class="mk interrupted"></i> Stopped</span>
+        <span><i class="mk failed"></i> Failed</span>
+        <span><i class="bar completed"></i> Message → completed response</span>
+        <span><i class="bar regenerated"></i> Regenerated attempt</span>
+        <span><i class="bar interrupted"></i> Not completed</span>
+        <span class="tip">Double-click: zoom in · ←/→: move · 1–4: zoom</span>
+      </div>
+    </section>
+    <aside class="details" id="details" aria-live="polite">
+      <p class="hint">Click a marker, an interval or a conversation to see details.</p>
+    </aside>
+  </main>
+
+  <dialog id="dataDialog">
+    <form method="dialog" class="dialog-head">
+      <h2>Stored data</h2>
+      <button value="close" aria-label="Close">✕</button>
+    </form>
+    <p class="muted">Everything is stored only in this browser (IndexedDB of this extension). No message text is stored: only conversation ids, titles, URLs, event types, timestamps and message ids.</p>
+    <div id="stats" class="stats"></div>
+    <div class="actions">
+      <button id="exportBtn">Export JSON</button>
+      <button id="clearBtn" class="danger">Delete all activity…</button>
+    </div>
+    <h3>Conversations</h3>
+    <div class="table-wrap"><table id="convTable"><thead><tr><th>Title</th><th>ID</th><th>Events</th><th>Last activity</th><th></th></tr></thead><tbody></tbody></table></div>
+  </dialog>
+
+  <script type="module" src="dashboard.js"></script>
+</body>
+</html>
