@@ -46,8 +46,9 @@ describe('converting a conversation tree to events', () => {
       firstObservedAt: T0,
       lastActivityAt: T0 + 75000,
       serverUpdateTime: T0 + 75000,
+      convertVersion: 2,
     });
-    assert.deepEqual(stats, { messages: 2, responses: 2, withUpdateTime: 2, inProgress: 0 });
+    assert.deepEqual(stats, { messages: 2, responses: 2, withUpdateTime: 2, updateTimeIgnored: 0, inProgress: 0 });
   });
 
   test('without a stored update time, completion falls back to the final message creation time', () => {
@@ -56,6 +57,37 @@ describe('converting a conversation tree to events', () => {
     const [, r] = convert(b).events;
     assert.equal(r.timestamp, T0 + 2000);
     assert.equal(r.timestampSource, 'server-create-time');
+  });
+
+  test('an update time later than the next message is ignored (ChatGPT bumps it on later activity)', () => {
+    const b = new ConversationBuilder({ createdAt: T0 });
+    const e1 = b.exchange(T0 + 1000, T0 + 2000, T0 + 5 * 86400e3); // "updated" days later
+    b.exchange(T0 + 60000, T0 + 61000, T0 + 70000);
+    const { events, stats } = convert(b);
+    const r1 = events.find((x) => x.messageId === e1.assistant);
+    assert.equal(r1.timestamp, T0 + 2000, 'falls back to the creation time');
+    assert.equal(r1.timestampSource, 'server-create-time');
+    assert.equal(r1.updateTimeIgnored, true);
+    assert.equal(stats.updateTimeIgnored, 1);
+    assert.equal(stats.withUpdateTime, 1);
+  });
+
+  test('an update time more than an hour after the response started is ignored, even for the last message', () => {
+    const b = new ConversationBuilder({ createdAt: T0 });
+    b.exchange(T0 + 1000, T0 + 2000, T0 + 2 * 3600e3);
+    const [, r] = convert(b).events;
+    assert.equal(r.timestamp, T0 + 2000);
+    assert.equal(r.updateTimeIgnored, true);
+  });
+
+  test('regression: bumped update times no longer merge a week of exchanges into one session', () => {
+    const b = new ConversationBuilder({ createdAt: T0 });
+    const last = T0 + 6 * 86400e3;
+    for (let d = 0; d < 6; d++) b.exchange(T0 + d * 86400e3, T0 + d * 86400e3 + 1000, last); // all "updated" on the last day
+    const { events, conversation } = convert(b);
+    const [row] = buildRows([conversation], events);
+    assert.equal(row.sessions.length, 6);
+    assert.ok(row.intervals.every((iv) => iv.end - iv.start < 60e3));
   });
 
   test('tool calls and reasoning form one response; completion is the final answer', () => {

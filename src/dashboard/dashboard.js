@@ -1,6 +1,6 @@
 import { TimelineDB } from '../shared/db.js';
 import { EventType, PROVISIONAL_PREFIX } from '../shared/constants.js';
-import { convertConversation } from '../shared/convert.js';
+import { convertConversation, CONVERT_VERSION } from '../shared/convert.js';
 import { loadHistory } from './loader.js';
 import { buildRows, selectRows, shortId } from '../timeline/model.js';
 import { layoutRow, ROW_HEIGHT } from '../timeline/layout.js';
@@ -287,7 +287,8 @@ function renderDetails() {
         ['Message id', `<code>${esc(iv.request.messageId)}</code>`],
         ['Response id', r.messageId ? `<code>${esc(r.messageId)}</code>` : '—'],
       ].filter(Boolean))}
-      ${iv.status !== 'completed' ? '<p class="note">The response did not complete normally, so this is not a completed message→response interval.</p>' : ''}`;
+      ${iv.status !== 'completed' ? '<p class="note">The response did not complete normally, so this is not a completed message→response interval.</p>' : ''}
+      ${r.updateTimeIgnored ? '<p class="note">ChatGPT\'s update time for this response was implausible (after your next message or over an hour later), so the end is the creation time of the final message; the real completion may be somewhat later.</p>' : ''}`;
     return;
   }
   if (found.event) {
@@ -312,6 +313,9 @@ function renderDetails() {
       if (req) pairs.push(['In response to message sent', exact(req.timestamp)]);
       if (e.startedAt) pairs.push(['Generation first observed', esc(time(e.startedAt))]);
       if (e.responseKind === 'regenerated') pairs.push(['Kind', 'Regenerated response']);
+      if (e.updateTimeIgnored) {
+        note = 'ChatGPT reported a later update time for this response, but it was after your next message or over an hour later (ChatGPT updates it on later activity), so the creation time of the final message is used. The real completion may be somewhat later.';
+      }
       if (!req) {
         note = e.requestMessageId
           ? 'The message that requested this response is not part of the loaded data, so no interval is drawn.'
@@ -382,7 +386,9 @@ async function renderDataDialog() {
   $('#lastLoad').textContent = last
     ? `Last load: ${time(last.at)}, period from ${time(last.since)}. ${last.stats.listed} conversations listed, ${last.stats.fetched} read, ${last.stats.unchanged} unchanged` +
       `${last.stats.missing + last.stats.failed ? `, ${last.stats.missing + last.stats.failed} could not be read` : ''}. ` +
-      `${last.totals.responses} responses read; ${last.totals.withUpdateTime} had a stored completion (update) time, the rest use the final message's creation time.`
+      `${last.totals.responses} responses read; ${last.totals.withUpdateTime} use ChatGPT's update time as completion time` +
+      `${last.totals.updateTimeIgnored ? ` (${last.totals.updateTimeIgnored} update times were ignored as implausible: later than your next message or over an hour)` : ''}` +
+      `; the rest use the creation time of the final message.`
     : 'Nothing loaded yet.';
   const rows = [...state.rows].sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0));
   $('#convTable tbody').innerHTML = rows.map((r) => `<tr>
@@ -591,7 +597,7 @@ async function loadFromChatGPT() {
   let lastRefresh = 0;
   setLoadStatus('Connecting to chatgpt.com…');
   try {
-    const known = await state.db.knownUpdateTimes();
+    const known = await state.db.knownUpdateTimes(CONVERT_VERSION);
     const stats = await loadHistory({
       since,
       known,
@@ -607,6 +613,7 @@ async function loadFromChatGPT() {
         totals.conversations++;
         totals.responses += s.responses;
         totals.withUpdateTime += s.withUpdateTime;
+        totals.updateTimeIgnored = (totals.updateTimeIgnored || 0) + s.updateTimeIgnored;
         totals.inProgress += s.inProgress;
         if (Date.now() - lastRefresh > 1000) {
           lastRefresh = Date.now();

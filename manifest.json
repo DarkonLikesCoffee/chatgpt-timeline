@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ChatGPT Activity Timeline",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Reads your ChatGPT conversation history for a period you choose and shows when you sent messages and when responses finished, on a local timeline.",
   "minimum_chrome_version": "116",
   "host_permissions": ["https://chatgpt.com/*"],

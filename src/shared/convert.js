@@ -14,8 +14,11 @@
 //   reasoning and the answer). More than one attempt = regenerated responses.
 // - Attempt outcome comes from its last assistant message: in progress (no
 //   event), interrupted, failed, or completed. The completion time is the
-//   latest update (or, if ChatGPT stored none, creation) time of the
-//   attempt's assistant messages.
+//   latest *plausible* update time of the attempt's assistant messages, else
+//   the latest creation time. ChatGPT also bumps update times on later
+//   activity (continuing the chat, feedback, read-aloud…), so an update time
+//   counts only if it is no later than the next message sent after this
+//   response and within MAX_RESPONSE_MS of the message's creation.
 // - A user message whose parent already had an earlier user child is an
 //   edit of that message (revisionOf).
 
@@ -24,6 +27,10 @@ import { EventType, TimestampSource, Association, ResponseKind } from './constan
 // User-role nodes that are context, not messages the user sent.
 const NON_MESSAGE_USER_TYPES = new Set(['user_editable_context', 'model_editable_context']);
 const RESPONSE_ROLES = new Set(['assistant', 'tool']);
+// Longest plausible generation time of one message (deep research included).
+export const MAX_RESPONSE_MS = 60 * 60 * 1000;
+// Bump when conversion changes so stored conversations are converted again.
+export const CONVERT_VERSION = 2;
 
 export function toMs(v) {
   if (v == null || v === '') return null;
@@ -57,19 +64,26 @@ export function convertConversation(conv) {
   const users = [...nodes.values()].filter(isUserMessage);
   const userIds = new Set(users.map((u) => u.id));
   const events = [];
-  const stats = { messages: 0, responses: 0, withUpdateTime: 0, inProgress: 0 };
+  const stats = { messages: 0, responses: 0, withUpdateTime: 0, updateTimeIgnored: 0, inProgress: 0 };
 
-  // Non-user nodes in the subtree of `rootId`, stopping at user messages.
+  // Non-user nodes in the subtree of `rootId`, stopping at user messages;
+  // also the earliest user message sent after it (bounds the completion).
   const attemptNodes = (rootId) => {
     const out = [];
+    let nextUserAt = Infinity;
     const stack = [rootId];
     while (stack.length) {
       const n = nodes.get(stack.pop());
-      if (!n || userIds.has(n.id) || n.role === 'user') continue;
+      if (!n) continue;
+      if (userIds.has(n.id) || n.role === 'user') {
+        const t = toMs(n.create_time);
+        if (t != null && t < nextUserAt) nextUserAt = t;
+        continue;
+      }
       out.push(n);
       for (const c of n.children || []) stack.push(c);
     }
-    return out;
+    return { nodes: out, nextUserAt };
   };
 
   for (const u of users) {
@@ -97,25 +111,33 @@ export function convertConversation(conv) {
     for (const childId of u.children || []) {
       const child = nodes.get(childId);
       if (!child || userIds.has(childId)) continue;
-      const parts = attemptNodes(childId).filter((n) => RESPONSE_ROLES.has(n.role) && toMs(n.create_time) != null);
+      const { nodes: subtree, nextUserAt } = attemptNodes(childId);
+      const parts = subtree.filter((n) => RESPONSE_ROLES.has(n.role) && toMs(n.create_time) != null);
       const assistants = parts.filter((n) => n.role === 'assistant');
       if (!assistants.length) continue;
       const startedAt = Math.min(...parts.map((n) => toMs(n.create_time)));
       const last = assistants.reduce((a, b) => (toMs(b.create_time) >= toMs(a.create_time) ? b : a));
       let end = -Infinity;
       let fromUpdate = false;
+      let ignored = false;
       for (const n of assistants) {
         const c = toMs(n.create_time);
-        const up = toMs(n.update_time);
-        if (up != null && up >= c && up > end) {
-          end = up;
-          fromUpdate = true;
-        } else if (c > end) {
+        if (c > end) {
           end = c;
           fromUpdate = false;
         }
+        const up = toMs(n.update_time);
+        if (up == null || up <= c) continue;
+        if (up > nextUserAt || up - c > MAX_RESPONSE_MS) {
+          ignored = true;
+          continue;
+        }
+        if (up > end) {
+          end = up;
+          fromUpdate = true;
+        }
       }
-      attempts.push({ id: childId, startedAt, end, fromUpdate, type: outcome(last) });
+      attempts.push({ id: childId, startedAt, end, fromUpdate, ignored, type: outcome(last) });
     }
     attempts.sort((a, b) => a.startedAt - b.startedAt);
     attempts.forEach((a, i) => {
@@ -125,6 +147,7 @@ export function convertConversation(conv) {
       }
       stats.responses++;
       if (a.fromUpdate) stats.withUpdateTime++;
+      if (a.ignored) stats.updateTimeIgnored++;
       events.push({
         id: `resp:${a.id}`,
         conversationId: conv.id,
@@ -138,6 +161,7 @@ export function convertConversation(conv) {
         responseKind: i === 0 ? ResponseKind.INITIAL : ResponseKind.REGENERATED,
         previousResponseId: i === 0 ? null : attempts[i - 1].id,
         startedAt: Math.max(a.startedAt, sentAt),
+        ...(a.ignored ? { updateTimeIgnored: true } : {}),
       });
     });
   }
@@ -154,6 +178,7 @@ export function convertConversation(conv) {
     firstObservedAt: createdAt ?? (times.length ? times[0] : null),
     lastActivityAt: times.length ? times[times.length - 1] : updatedAt,
     serverUpdateTime: updatedAt,
+    convertVersion: CONVERT_VERSION,
   };
   return { conversation, events, stats };
 }

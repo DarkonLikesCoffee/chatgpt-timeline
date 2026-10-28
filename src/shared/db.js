@@ -92,9 +92,13 @@ export class TimelineDB {
   }
 
   // Server update time of each stored conversation, to skip unchanged ones.
-  async knownUpdateTimes() {
+  // Conversations converted by an older converter version are left out, so
+  // they are read and converted again.
+  async knownUpdateTimes(convertVersion = 0) {
     const all = await this.listConversations();
-    return Object.fromEntries(all.filter((c) => c.serverUpdateTime != null).map((c) => [c.id, c.serverUpdateTime]));
+    return Object.fromEntries(
+      all.filter((c) => c.serverUpdateTime != null && (c.convertVersion || 0) >= convertVersion).map((c) => [c.id, c.serverUpdateTime]),
+    );
   }
 
   async getConversation(id) {

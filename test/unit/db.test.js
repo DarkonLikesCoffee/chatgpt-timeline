@@ -85,6 +85,10 @@ describe('database', () => {
     await db.replaceConversation(conv('c1', { serverUpdateTime: 111 }), []);
     await db.replaceConversation(conv('c2', { serverUpdateTime: null }), []);
     assert.deepEqual(await db.knownUpdateTimes(), { c1: 111 });
+    // Converted by an older converter: not "known", so it is read again.
+    assert.deepEqual(await db.knownUpdateTimes(2), {});
+    await db.replaceConversation(conv('c3', { serverUpdateTime: 333, convertVersion: 2 }), []);
+    assert.deepEqual(await db.knownUpdateTimes(2), { c3: 333 });
     db.close();
   });
 
